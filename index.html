@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+
+<title>Better MD viewer — Read local markdown files in your browser, on-device</title>
+<meta name="description" content="Better MD viewer is a zero-install, on-device reader for local markdown folders. Renders .md, .markdown, and .txt files entirely in your browser — no uploads, no account, no server. Free." />
+<meta name="keywords" content="markdown viewer, md reader, local markdown, offline markdown, browser markdown reader, on-device, private notes reader" />
+<meta name="robots" content="index,follow,max-image-preview:large" />
+<meta name="theme-color" content="#FAF8F3" />
+
+<link rel="canonical" href="https://mdviewer.netlify.app/" />
+
+<!-- Favicons -->
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+<link rel="apple-touch-icon" href="assets/favicon.svg" />
+
+<!-- Open Graph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Better MD viewer" />
+<meta property="og:title" content="Better MD viewer — Read local markdown, on-device" />
+<meta property="og:description" content="Zero-install, on-device reader for local markdown folders. No uploads, no account, no server." />
+<meta property="og:locale" content="en_US" />
+<meta property="og:url" content="https://mdviewer.netlify.app/" />
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Better MD viewer — Read local markdown, on-device" />
+<meta name="twitter:description" content="Zero-install, on-device reader for local markdown folders. No uploads, no server." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+
+<!-- Structured data: SoftwareApplication -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Better MD viewer",
+  "description": "Zero-install, on-device reader for local markdown folders. Renders .md, .markdown, and .txt files entirely in your browser.",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Web Browser",
+  "browserRequirements": "Requires a modern browser. File System Access API supported in Chromium-based browsers; upload fallback elsewhere.",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "featureList": [
+    "Open local folders via File System Access API or upload",
+    "Drag-and-drop folders or individual .md / .markdown / .txt files",
+    "Sidebar with grouped file tree and filter search",
+    "Recent-folder memory via IndexedDB (up to 5)",
+    "Keyboard navigation (\u2318O, arrow keys, j/k)",
+    "Tweakable typography and btop-inspired themes",
+    "Rendering via Marked with DOMPurify sanitization"
+  ],
+  "isAccessibleForFree": true,
+  "inLanguage": "en"
+}
+</script>
+
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">md</div>
+      <span>Better MD viewer</span>
+    </div>
+    <div class="top-meta">
+      <span class="privacy-pill"><span class="dot"></span>ON-DEVICE</span>
+      <span class="sep"></span>
+      <span id="fileCount">No files loaded</span>
+      <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <aside class="sidebar">
+    <div class="side-actions">
+      <button class="btn" id="openFolderBtn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5H2.5a1 1 0 0 0-1 1z"/></svg>
+        <span>Open folder</span>
+      </button>
+      <button class="btn ghost" id="openFilesBtn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 1.5h5l3 3V14a.5.5 0 0 1-.5.5h-7A.5.5 0 0 1 4 14V2a.5.5 0 0 1 0-.5z M9 1.5V4.5h3"/></svg>
+        <span>Select files</span>
+      </button>
+    </div>
+
+    <div class="search-wrap" id="searchWrap">
+      <svg class="mag" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
+      <input class="search" id="searchInput" type="text" placeholder="Filter files…" spellcheck="false" aria-label="Filter files"/>
+    </div>
+
+    <nav class="side-sections" id="sideSections" aria-label="File list">
+      <!-- populated by JS -->
+    </nav>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="crumbs" id="crumbs">
+      <span class="meta">No document selected</span>
+    </div>
+    <div class="reader" id="reader">
+      <div class="splash" id="splash">
+        <section class="splash-hero" aria-labelledby="hero-title">
+          <div class="splash-card">
+            <div class="splash-mark" aria-hidden="true"><span>md</span></div>
+            <h1 id="hero-title">Read your markdown, locally.</h1>
+            <p>A clean reader for local <code>.md</code> files. Nothing uploads. Nothing tracks.</p>
+
+            <div class="splash-drop" id="splashDrop" role="button" tabindex="0" aria-label="Open folder or drop files">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M3 15v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4"/></svg>
+              <div class="splash-drop-title">Drag a folder or files here</div>
+              <div class="splash-drop-sub">⌘O to open · .md · .markdown · .txt</div>
+            </div>
+
+            <div class="splash-row">
+              <div class="splash-feat">
+                <div class="lbl">01 · On-device</div>
+                <div class="txt">Rendering happens in your browser. Your notes never leave your machine.</div>
+              </div>
+              <div class="splash-feat">
+                <div class="lbl">02 · Zero install</div>
+                <div class="txt">No account, no desktop app, no server. Open the page and pick a folder.</div>
+              </div>
+              <div class="splash-feat">
+                <div class="lbl">03 · Resumable</div>
+                <div class="txt">Recent folders are remembered locally so you land where you left off.</div>
+              </div>
+            </div>
+          </div>
+
+        </section>
+
+      </div>
+    </div>
+
+    <div class="drop-over" id="dropOver">
+      <div class="box">Drop folder or .md files to read</div>
+    </div>
+  </main>
+
+</div>
+
+<!-- Tweaks -->
+<div class="tweaks" id="tweaks" role="dialog" aria-label="Tweaks">
+  <h4>Tweaks</h4>
+  <div class="row">
+    <label for="tw-size">Body font size</label>
+    <input type="range" id="tw-size" min="14" max="22" step="1"/>
+  </div>
+  <div class="row">
+    <label for="tw-width">Reading width</label>
+    <input type="range" id="tw-width" min="56" max="140" step="1"/>
+  </div>
+  <div class="row">
+    <label for="tw-face">Body face</label>
+    <select id="tw-face">
+      <option value="serif">Serif (Plex Serif)</option>
+      <option value="sans">Sans (Plex Sans)</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="tw-theme">Theme</label>
+    <select id="tw-theme">
+      <option value="catppuccin-latte">Catppuccin Latte</option>
+      <option value="catppuccin-mocha">Catppuccin Mocha</option>
+      <option value="gruvbox-light">Gruvbox Light</option>
+      <option value="gruvbox-dark">Gruvbox Dark</option>
+      <option value="solarized-light">Solarized Light</option>
+      <option value="solarized-dark">Solarized Dark</option>
+      <option value="tokyo-night">Tokyo Night</option>
+      <option value="nord">Nord</option>
+      <option value="dracula">Dracula</option>
+      <option value="one-dark">One Dark</option>
+    </select>
+  </div>
+  <div class="tweaks-foot">
+    <span class="tweaks-hint">Changes apply live</span>
+    <button class="btn ghost tweaks-apply" id="tweaksApply" type="button">Apply</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<div class="modal-wrap" id="safariNote" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="safariNoteTitle">
+    <div class="modal-eyebrow">Heads up — browser wording</div>
+    <h3 id="safariNoteTitle">Your browser will say <em>"Upload"</em>. Nothing actually uploads.</h3>
+    <p>Safari and Firefox don't yet support the modern folder-access API. They fall back to a file-input prompt that's labelled <em>"Upload N files to this site"</em>.</p>
+    <p>Better MD viewer ignores that wording. Your files are read into this tab and rendered locally. Nothing is sent over the network — you can confirm in your browser's Network tab.</p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="safariNoteCancel" type="button">Cancel</button>
+      <button class="btn" id="safariNoteContinue" type="button">Got it — open folder</button>
+    </div>
+    <label class="modal-dismiss"><input type="checkbox" id="safariNoteHide" /> Don't show this again</label>
+  </div>
+</div>
+
+<input type="file" id="filePicker" style="display:none" accept=".md,.markdown,.txt" multiple />
+<input type="file" id="dirPicker" style="display:none" webkitdirectory directory multiple />
+
+<script src="assets/marked.min.js" defer></script>
+<script src="assets/purify.min.js" defer></script>
+<script src="assets/highlight.min.js" defer></script>
+<script src="assets/app.js" defer></script>
+
+</body>
+</html>
