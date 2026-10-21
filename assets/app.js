@@ -44,6 +44,7 @@ document.addEventListener("click", (e) => {
     removed: new Set(),  // paths the user removed from the list, so rescans don't bring them back
     activeId: null,
     activeStamp: 0,      // lastModified of the open file
+    activeText: "",      // and its text, as last rendered
     stamps: new Map(),   // lastModified of each file as last seen (live folders only)
     unseen: new Set(),   // paths that changed or appeared on disk since you last opened them
     activeFolderKey: null,
@@ -839,6 +840,7 @@ document.addEventListener("click", (e) => {
     }
     if (gen !== openGen) return;   // another file was opened while this one was loading
     state.activeStamp = stamp;
+    state.activeText = text;
     if (f.kind === "handle") state.stamps.set(f.path, stamp);
     renderDocument(f, text);
 
@@ -1228,6 +1230,9 @@ document.addEventListener("click", (e) => {
       if (f !== activeFile()) return;
       state.activeStamp = file.lastModified;
       state.stamps.set(f.path, file.lastModified);
+      // Editors and sync tools often rewrite a file without changing it.
+      if (text === state.activeText) return;
+      state.activeText = text;
       contentCache.delete(f.id);
       const before = blockCounts($("#readerInner"));
       const pos = readingPosition();
