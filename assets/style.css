@@ -1134,6 +1134,13 @@ body.dragging .splash-drop { border-color: var(--accent); background: var(--acce
   .outline { display: none; }
 }
 
+/* Reduced motion: nothing slides or rotates; fades stay */
+@media (prefers-reduced-motion: reduce) {
+  .toast, .toast.on { transform: translateX(-50%); transition: opacity 140ms ease; }
+  .sidebar, .app.sidebar-hidden .sidebar, .app.drawer-open .sidebar { transition: none; }
+  .tree-row .twist svg { transition: none; }
+}
+
 /* Print: just the document, dark on white whatever the theme */
 @media print {
   :root {
