@@ -556,7 +556,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 }
 .md blockquote > :first-child { margin-top: 0; }
 .md blockquote > :last-child { margin-bottom: 0; }
-.md ul, .md ol { margin: 0 0 1em; padding-left: 1.5em; }
+.md ul, .md ol { --list-indent: 1.5em; margin: 0 0 1em; padding-left: var(--list-indent); }
 .md li { margin: 0.3em 0; }
 .md li > p { margin: 0.3em 0; }
 .md li::marker { color: var(--ink-4); }
@@ -703,7 +703,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   font-size: .88em;
   color: var(--ink-3);
 }
-.md .footnotes ol { padding-left: 1.4em; }
+.md .footnotes ol { --list-indent: 1.4em; }
 .md .footnote-backref { margin-left: .2em; text-decoration: none; }
 
 /* Remote images wait for consent */
@@ -753,15 +753,32 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 /* Blocks that changed in the last live reload. Shadows rather than backgrounds,
    so code blocks and callouts keep their own fill once the tint fades. */
 .md { --change-tint: color-mix(in oklab, var(--warning-accent, var(--accent)) 24%, transparent); }
-/* First shadow: a 3px bar in the left margin, like an editor's change gutter.
-   The highlight appears at once; only the fade is animated. */
-.md .changed {
-  box-shadow: -9px 0 0 -6px var(--warning-accent, var(--accent)), 0 0 0 5px var(--change-tint), inset 0 0 0 999px var(--change-tint);
-}
+/* The highlight appears at once; only the fade is animated. */
+.md .changed { box-shadow: 0 0 0 5px var(--change-tint), inset 0 0 0 999px var(--change-tint); }
 .md .changed.settled,
 .md tr.changed.settled > * { transition: box-shadow 1.2s ease; }
-.md .changed.settled { box-shadow: -9px 0 0 -6px transparent, 0 0 0 5px transparent, inset 0 0 0 999px transparent; }
+.md .changed.settled { box-shadow: 0 0 0 5px transparent, inset 0 0 0 999px transparent; }
 .md :is(p, li, h1, h2, h3, h4, h5, h6).changed { border-radius: 3px; }
+/* A bar in the margin beside the text column, like an editor's change gutter, so it
+   never touches the text or a list marker. Code blocks carry it on their wrapper,
+   since the pre would clip it. */
+.md .changed:where(:not(tr, pre, .callout)) { position: relative; }
+.md .changed:where(:not(tr, pre, .callout))::before,
+.md .code-block:has(> pre.changed)::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  left: -12px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--warning-accent, var(--accent));
+}
+.md li.changed::before { left: calc(-12px - var(--list-indent)); }
+/* Offsets are measured inside a quote's 3px rule. */
+.md blockquote.changed::before { left: -15px; }
+.md .changed.settled::before,
+.md .code-block:has(> pre.settled)::before { opacity: 0; transition: opacity 1.2s ease; }
 .md blockquote.callout.changed {
   box-shadow: inset 3px 0 0 var(--callout-accent, var(--accent)), 0 0 0 5px var(--change-tint), inset 0 0 0 999px var(--change-tint);
 }
@@ -1139,4 +1156,5 @@ body.dragging .splash-drop { border-color: var(--accent); background: var(--acce
   .md h1, .md h2, .md h3, .md h4 { break-after: avoid; }
   .md pre, .md table, .md img, .md blockquote { break-inside: avoid; }
   .md .changed:not(.callout), .md tr.changed > * { box-shadow: none !important; }
+  .md .changed::before, .md .code-block::before { content: none !important; }
 }
