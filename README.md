@@ -52,6 +52,24 @@ Plain HTML, CSS and JavaScript, with no build step and nothing to install. [mark
 | `index.html` | Page structure and the Content-Security-Policy |
 | `assets/app.js` | Reading folders, rendering, links, live reload, search |
 | `assets/style.css` | The design system; each theme sets a small palette |
+| `test/run.cjs` | Browser tests |
+
+## Tests
+
+`test/run.cjs` opens the viewer in Chromium through [Playwright](https://playwright.dev), with a fake folder in place of the folder picker, and runs about 120 checks. Playwright isn't part of the repo, so install it once, anywhere else:
+
+```sh
+npm install --prefix ~/.cache/bmv-tests playwright@1.58.2
+~/.cache/bmv-tests/node_modules/.bin/playwright install chromium
+```
+
+Then, from the repo:
+
+```sh
+node test/run.cjs ~/.cache/bmv-tests/node_modules/playwright
+```
+
+To check the live site instead, add its address as a second argument.
 
 ## Third-party code
 
