@@ -609,6 +609,8 @@ document.addEventListener("click", (e) => {
   const ICON_COLLAPSE_ALL = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 2.5 3 3 3-3"/><path d="m5 13.5 3-3 3 3"/></svg>`;
   const ICON_EXPAND_ALL = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 5.5 3-3 3 3"/><path d="m5 10.5 3 3 3-3"/></svg>`;
   const ICON_RESCAN = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89"/><path d="M13.5 2.5v3h-3"/></svg>`;
+  const ICON_FOLDER = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5H2.5a1 1 0 0 0-1 1z"/></svg>`;
+  const ICON_UPLOAD = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10.5v-8"/><path d="m5 5.5 3-3 3 3"/><path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2"/></svg>`;
 
   function renderRecents() {
     const root = el.recentsSection;
@@ -627,7 +629,7 @@ document.addEventListener("click", (e) => {
       row.className = "recent" + (r.source === "handle" ? "" : " no-handle");
       row.innerHTML = `
         <button class="recent-open" type="button">
-          <span class="ricon">${r.source === "handle" ? "fs" : "up"}</span>
+          <span class="ricon" title="${r.source === "handle" ? "Folder — reopens directly" : "Read from an upload — re-select to reopen"}">${r.source === "handle" ? ICON_FOLDER : ICON_UPLOAD}</span>
           <span class="rtitle"></span>
           <span class="rmeta"></span>
         </button>
@@ -782,7 +784,7 @@ document.addEventListener("click", (e) => {
 
   function renderTopMeta() {
     const n = state.files.length;
-    el.fileCount.textContent = !n ? "No files loaded" : `${n} file${n === 1 ? "" : "s"} loaded`;
+    el.fileCount.textContent = !n ? "no files" : `${n.toLocaleString()} file${n === 1 ? "" : "s"}`;
   }
 
   // ---------------------------------------------------------------
@@ -951,7 +953,7 @@ document.addEventListener("click", (e) => {
     parts.forEach((p, i) => {
       const span = document.createElement("span");
       span.className = i === parts.length - 1 ? "cur" : "";
-      span.textContent = p.toUpperCase();
+      span.textContent = p;
       frag.appendChild(span);
       if (i < parts.length - 1) {
         const sep = document.createElement("span");
@@ -1748,22 +1750,35 @@ document.addEventListener("click", (e) => {
   // ---------------------------------------------------------------
   // Tweaks
   // ---------------------------------------------------------------
-  const TWEAK_KEY = "mdviewer.tweaks.v1";
+  const TWEAK_KEY = "mdviewer.tweaks.v2";
   const defaults = window.TWEAK_DEFAULTS || {
-    bodySize: 17, readingWidth: 76, bodyFace: "serif", theme: "catppuccin-latte", outline: true, remoteImages: "block"
+    bodySize: 16, readingWidth: 76, bodyFace: "sans", theme: "slate", outline: true, remoteImages: "block"
   };
 
   let tweaks = { ...defaults };
   try {
     const saved = JSON.parse(localStorage.getItem(TWEAK_KEY) || "null");
-    if (saved && typeof saved === "object") tweaks = { ...defaults, ...saved };
+    const old = saved ? null : JSON.parse(localStorage.getItem("mdviewer.tweaks.v1") || "null");
+    if (saved && typeof saved === "object") {
+      tweaks = { ...defaults, ...saved };
+    } else if (old && typeof old === "object") {
+      // The redesign moves everyone to Slate once; settings still at the old defaults move to the new ones.
+      tweaks = { ...defaults, ...old, theme: defaults.theme };
+      if (old.readingWidth === 120) tweaks.readingWidth = defaults.readingWidth;
+      if (old.bodySize === 17) tweaks.bodySize = defaults.bodySize;
+      if (old.bodyFace === "serif") tweaks.bodyFace = defaults.bodyFace;
+      persistTweaks();
+    }
   } catch (_) {}
 
   function persistTweaks() {
     try { localStorage.setItem(TWEAK_KEY, JSON.stringify(tweaks)); } catch (_) {}
   }
 
+  // Slate and Paper name their layers (surface, line); the other themes get them mixed from paper and ink.
   const THEMES = {
+    "slate": { accent: "#88c0d0", accent2: "#3b4956", paper: "#2e3440", ink: "#edeff4", ink2: "#d8dee9", ink3: "#a6b1c5", ink4: "#7b869c", surface: "#3b4252", surface2: "#434c5e", line: "#3e4555", line2: "#434c5d" },
+    "paper": { accent: "#8f6023", accent2: "#f1e6d2", paper: "#faf8f3", ink: "#1a1814", ink2: "#3a352c", ink3: "#6b6558", ink4: "#9a9383", surface: "#f2eee5", surface2: "#e9e3d5", line: "#e6e0d1", line2: "#d6ceb9" },
     "catppuccin-latte": { accent: "#8839ef", accent2: "#eadcf8", paper: "#eff1f5", p2: "#e6e9ef", p3: "#dce0e8", ink: "#4c4f69", ink2: "#5c5f77", ink3: "#6c6f85", ink4: "#8c8fa1", rule: "#ccd0da", rule2: "#bcc0cc" },
     "catppuccin-mocha": { accent: "#cba6f7", accent2: "#332641", paper: "#1e1e2e", p2: "#181825", p3: "#313244", ink: "#cdd6f4", ink2: "#bac2de", ink3: "#9399b2", ink4: "#6c7086", rule: "#45475a", rule2: "#585b70" },
     "gruvbox-light": { accent: "#af3a03", accent2: "#f2e5bc", paper: "#fbf1c7", p2: "#f2e5bc", p3: "#ebdbb2", ink: "#3c3836", ink2: "#504945", ink3: "#7c6f64", ink4: "#928374", rule: "#d5c4a1", rule2: "#bdae93", infoAccent: "#076678", infoBg: "#f2e5bc", infoRule: "#458588", questionAccent: "#79740e", questionBg: "#f2e5bc", questionRule: "#98971a", warningAccent: "#b57614", warningBg: "#f2e5bc", warningRule: "#d79921" },
@@ -1777,6 +1792,8 @@ document.addEventListener("click", (e) => {
   };
 
   const SYNTAX_THEMES = {
+    "slate": { comment: "#616e88", keyword: "#81a1c1", string: "#a3be8c", title: "#88c0d0", variable: "#d8dee9", number: "#b48ead", attr: "#ebcb8b", addition: "#a3be8c", deletion: "#bf616a" },
+    "paper": { comment: "#928374", keyword: "#9d0006", string: "#79740e", title: "#076678", variable: "#8f3f71", number: "#af3a03", attr: "#b57614", addition: "#79740e", deletion: "#9d0006" },
     "catppuccin-latte": { comment: "#8c8fa1", keyword: "#8839ef", string: "#40a02b", title: "#1e66f5", variable: "#dd7878", number: "#fe640b", attr: "#df8e1d", addition: "#40a02b", deletion: "#d20f39" },
     "catppuccin-mocha": { comment: "#6c7086", keyword: "#cba6f7", string: "#a6e3a1", title: "#89b4fa", variable: "#f5c2e7", number: "#fab387", attr: "#f9e2af", addition: "#a6e3a1", deletion: "#f38ba8" },
     "gruvbox-light": { comment: "#928374", keyword: "#9d0006", string: "#79740e", title: "#076678", variable: "#8f3f71", number: "#af3a03", attr: "#b57614", addition: "#79740e", deletion: "#9d0006" },
@@ -1792,6 +1809,8 @@ document.addEventListener("click", (e) => {
   // Callout colours as on GitHub — blue note, green tip, purple important, yellow warning, red caution —
   // taken from each theme's palette. A theme's own info/question/warning colours win.
   const CALLOUT_COLORS = {
+    "slate": ["#81a1c1", "#a3be8c", "#b48ead", "#ebcb8b", "#bf616a"],
+    "paper": ["#3d6d99", "#5b7f2e", "#86509b", "#a86f12", "#b0412b"],
     "catppuccin-latte": ["#1e66f5", "#40a02b", "#8839ef", "#df8e1d", "#d20f39"],
     "catppuccin-mocha": ["#89b4fa", "#a6e3a1", "#cba6f7", "#f9e2af", "#f38ba8"],
     "gruvbox-light": ["#076678", "#79740e", "#8f3f71", "#b57614", "#9d0006"],
@@ -1820,14 +1839,14 @@ document.addEventListener("click", (e) => {
     rs.setProperty("--accent",   t.accent);
     rs.setProperty("--accent-2", t.accent2);
     rs.setProperty("--paper",   t.paper);
-    rs.setProperty("--paper-2", t.p2);
-    rs.setProperty("--paper-3", t.p3);
     rs.setProperty("--ink",     t.ink);
     rs.setProperty("--ink-2",   t.ink2);
     rs.setProperty("--ink-3",   t.ink3);
     rs.setProperty("--ink-4",   t.ink4);
-    rs.setProperty("--rule",    t.rule);
-    rs.setProperty("--rule-2",  t.rule2);
+    for (const [prop, key] of [["--surface", "surface"], ["--surface-2", "surface2"], ["--line", "line"], ["--line-2", "line2"]]) {
+      if (t[key]) rs.setProperty(prop, t[key]);
+      else rs.removeProperty(prop);
+    }
 
     const [note, tip, important, warning, caution] = CALLOUT_COLORS[themeKey];
     const tint = c => `color-mix(in oklab, ${c} 10%, ${t.paper})`;
@@ -1855,33 +1874,31 @@ document.addEventListener("click", (e) => {
   function syncTweakControls() {
     const szEl = document.getElementById("tw-size");
     const wdEl = document.getElementById("tw-width");
-    const faEl = document.getElementById("tw-face");
     const thEl = document.getElementById("tw-theme");
     const olEl = document.getElementById("tw-outline");
-    const reEl = document.getElementById("tw-remote");
     if (szEl) szEl.value = tweaks.bodySize;
     if (wdEl) wdEl.value = tweaks.readingWidth;
-    if (faEl) faEl.value = tweaks.bodyFace;
     if (thEl) thEl.value = tweaks.theme;
     if (olEl) olEl.checked = !!tweaks.outline;
-    if (reEl) reEl.value = tweaks.remoteImages;
+    $$('input[name="tw-face"]').forEach(r => { r.checked = r.value === tweaks.bodyFace; });
+    $$('input[name="tw-remote"]').forEach(r => { r.checked = r.value === tweaks.remoteImages; });
   }
 
   function bindTweaks() {
     const set = (k, v) => { tweaks[k] = v; persistTweaks(); applyTweaks(); };
     document.getElementById("tw-size").addEventListener("input",  e => set("bodySize",     +e.target.value));
     document.getElementById("tw-width").addEventListener("input", e => set("readingWidth", +e.target.value));
-    document.getElementById("tw-face").addEventListener("change", e => set("bodyFace",      e.target.value));
+    $$('input[name="tw-face"]').forEach(r => r.addEventListener("change", e => set("bodyFace", e.target.value)));
     document.getElementById("tw-theme").addEventListener("change", e => set("theme", e.target.value));
     document.getElementById("tw-outline").addEventListener("change", e => { set("outline", e.target.checked); refreshOutline(); });
-    document.getElementById("tw-remote").addEventListener("change", e => {
+    $$('input[name="tw-remote"]').forEach(r => r.addEventListener("change", e => {
       set("remoteImages", e.target.value);
       const article = $("#readerInner");
       if (article && tweaks.remoteImages === "load") {
         releaseRemoteMedia(article);
         $(".remote-notice", article)?.remove();
       }
-    });
+    }));
   }
 
   // ---------------------------------------------------------------

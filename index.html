@@ -10,7 +10,7 @@
 <meta name="description" content="Better MD viewer is a zero-install, on-device reader for local markdown folders. Renders .md, .markdown, and .txt files entirely in your browser — no uploads, no account, no server. Free." />
 <meta name="keywords" content="markdown viewer, md reader, local markdown, offline markdown, browser markdown reader, on-device, private notes reader" />
 <meta name="robots" content="index,follow,max-image-preview:large" />
-<meta name="theme-color" content="#FAF8F3" />
+<meta name="theme-color" content="#2e3440" />
 
 <link rel="canonical" href="https://mdviewer.netlify.app/" />
 
@@ -75,14 +75,12 @@
     <button class="icon-btn" id="sidebarToggle" type="button" title="Toggle sidebar (⌘B)" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="true">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
     </button>
-    <div class="brand">
-      <div class="brand-mark" aria-hidden="true">md</div>
-      <span>Better MD viewer</span>
-    </div>
+    <div class="brand"><span>better</span><i class="mark" aria-hidden="true"></i><b>md</b></div>
     <div class="top-meta">
-      <span class="privacy-pill"><span class="dot"></span>ON-DEVICE</span>
-      <span class="sep"></span>
-      <span id="fileCount">No files loaded</span>
+      <span class="status" title="Files are read and rendered in this tab; nothing is uploaded">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>
+        <span>On-device</span><span class="dot-sep">·</span><span id="fileCount">no files</span>
+      </span>
       <button class="icon-btn" id="settingsBtn" type="button" title="Settings" aria-label="Settings">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
@@ -124,7 +122,7 @@
       <div class="splash" id="splash">
         <section class="splash-hero" aria-labelledby="hero-title">
           <div class="splash-card">
-            <div class="splash-mark" aria-hidden="true"><span>md</span></div>
+            <div class="eyebrow">On-device markdown reader</div>
             <h1 id="hero-title">Read your markdown, locally.</h1>
             <p>A clean reader for local <code>.md</code> files. Nothing uploads. Nothing tracks.</p>
 
@@ -169,9 +167,9 @@
 
 </div>
 
-<!-- Tweaks -->
-<div class="tweaks" id="tweaks" role="dialog" aria-label="Tweaks">
-  <h4>Tweaks</h4>
+<!-- Settings -->
+<div class="tweaks" id="tweaks" role="dialog" aria-label="Settings">
+  <h4>Settings</h4>
   <div class="row">
     <label for="tw-size">Body font size</label>
     <input type="range" id="tw-size" min="14" max="22" step="1"/>
@@ -181,15 +179,17 @@
     <input type="range" id="tw-width" min="56" max="140" step="1"/>
   </div>
   <div class="row">
-    <label for="tw-face">Body face</label>
-    <select id="tw-face">
-      <option value="serif">Serif (Plex Serif)</option>
-      <option value="sans">Sans (Plex Sans)</option>
-    </select>
+    <span class="row-label" id="tw-face-label">Body face</span>
+    <div class="seg" role="radiogroup" aria-labelledby="tw-face-label">
+      <label><input type="radio" name="tw-face" value="sans"/>Sans</label>
+      <label><input type="radio" name="tw-face" value="serif"/>Serif</label>
+    </div>
   </div>
   <div class="row">
     <label for="tw-theme">Theme</label>
     <select id="tw-theme">
+      <option value="slate">Slate</option>
+      <option value="paper">Paper</option>
       <option value="catppuccin-latte">Catppuccin Latte</option>
       <option value="catppuccin-mocha">Catppuccin Mocha</option>
       <option value="gruvbox-light">Gruvbox Light</option>
@@ -207,11 +207,11 @@
     <input type="checkbox" id="tw-outline"/>
   </div>
   <div class="row">
-    <label for="tw-remote">Remote images</label>
-    <select id="tw-remote">
-      <option value="block">Ask first</option>
-      <option value="load">Always load</option>
-    </select>
+    <span class="row-label" id="tw-remote-label">Remote images</span>
+    <div class="seg" role="radiogroup" aria-labelledby="tw-remote-label">
+      <label><input type="radio" name="tw-remote" value="block"/>Ask first</label>
+      <label><input type="radio" name="tw-remote" value="load"/>Always load</label>
+    </div>
   </div>
   <div class="tweaks-foot">
     <span class="tweaks-hint">Changes apply live</span>
