@@ -1,22 +1,32 @@
 /* Better MD viewer — local-only markdown reader */
 
-// Settings toggle — bound early so init errors can't block it.
-document.addEventListener("click", (e) => {
-  const btn = e.target && e.target.closest && e.target.closest("#settingsBtn");
-  const tw = document.getElementById("tweaks");
-  if (!tw) return;
-  if (btn) {
-    e.stopPropagation();
-    const on = tw.classList.toggle("on");
-    btn.classList.toggle("on", on);
-    return;
-  }
-  if (tw.classList.contains("on") && !tw.contains(e.target)) {
-    tw.classList.remove("on");
-    const sb = document.getElementById("settingsBtn");
-    if (sb) sb.classList.remove("on");
-  }
-});
+// Settings popover — bound early so init errors can't block it.
+{
+  // The panel comes last in the page, so from the keyboard focus moves into it, and back out.
+  const setOpen = (open, moveFocus) => {
+    const tw = document.getElementById("tweaks"), btn = document.getElementById("settingsBtn");
+    if (!tw || !btn) return;
+    tw.classList.toggle("on", open);
+    btn.classList.toggle("on", open);
+    btn.setAttribute("aria-expanded", String(open));
+    if (moveFocus) (open ? tw.querySelector("input, select") : btn).focus();
+  };
+  document.addEventListener("click", (e) => {
+    const tw = document.getElementById("tweaks");
+    if (!tw) return;
+    if (e.target.closest?.("#settingsBtn")) {
+      e.stopPropagation();
+      // Enter or Space on the button makes a click with no pointer behind it: detail is 0.
+      setOpen(!tw.classList.contains("on"), e.detail === 0);
+    } else if (tw.classList.contains("on") && !tw.contains(e.target)) {
+      setOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    const tw = document.getElementById("tweaks");
+    if (e.key === "Escape" && tw?.classList.contains("on")) setOpen(false, tw.contains(document.activeElement));
+  });
+}
 
 (() => {
   "use strict";
@@ -2006,7 +2016,7 @@ document.addEventListener("click", (e) => {
   // Tweaks
   // ---------------------------------------------------------------
   const TWEAK_KEY = "mdviewer.tweaks.v2";
-  const defaults = window.TWEAK_DEFAULTS || {
+  const defaults = {
     bodySize: 16, readingWidth: 76, bodyFace: "sans", theme: "slate", outline: true, remoteImages: "block"
   };
 
