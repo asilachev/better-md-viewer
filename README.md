@@ -34,10 +34,7 @@ Chrome, Edge and Arc read the folder directly, which is what makes live reload a
 
 ## Screenshots
 
-<p>
-  <img src="docs/screenshots/paper.png" alt="The Paper theme showing a decision record" width="74%">
-  <img src="docs/screenshots/mobile.png" alt="The phone layout" width="21.5%">
-</p>
+![The Paper theme showing a decision record, next to the phone layout in Slate](docs/screenshots/paper-and-phone.png)
 
 After a live reload, the edited paragraph and table row are highlighted, and the tree marks a note that changed in the background:
 
