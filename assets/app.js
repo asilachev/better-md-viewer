@@ -820,7 +820,7 @@ document.addEventListener("click", (e) => {
     rememberScroll();   // the file being left
     const gen = ++openGen;
     state.activeId = id;
-    const savedTop = rememberedScroll(f);
+    const saved = rememberedScroll(f);
     revealFile(f);
     if (state.unseen.delete(f.path)) renderFiles();
     syncActiveRow();
@@ -842,11 +842,15 @@ document.addEventListener("click", (e) => {
     if (f.kind === "handle") state.stamps.set(f.path, stamp);
     renderDocument(f, text);
 
+    const target = anchor && findAnchor(anchor);
     const hit = $("mark.hit, .tag-token.hit", el.reader);
-    if (returning && savedTop !== undefined) el.reader.scrollTop = savedTop;
-    else if (anchor) scrollToAnchor(anchor);
-    else if (hit) hit.scrollIntoView({ block: "center" });
-    else el.reader.scrollTop = savedTop || 0;
+    if (saved && (returning || (!target && !hit))) returnTo(saved);
+    else {
+      if (target) target.scrollIntoView({ block: "start" });
+      else if (hit) hit.scrollIntoView({ block: "center" });
+      else el.reader.scrollTop = 0;
+      returnTo(readingPosition());
+    }
     const focused = document.activeElement;
     if (!focused || !focused.closest("input, textarea, select")) el.reader.focus({ preventScroll: true });
     rememberLastFile(f);
@@ -855,9 +859,11 @@ document.addEventListener("click", (e) => {
   function renderDocument(f, text) {
     const gen = ++renderGen;
     if (changeObserver) { changeObserver.disconnect(); changeObserver = null; }
+    releasePosition();
     const article = document.createElement("article");
     article.className = "reader-inner md";
     article.id = "readerInner";
+    article.dataset.path = f.path;
     let held = 0;
     if (/\.(md|markdown)$/i.test(f.name)) {
       const { frontmatter, body } = splitFrontmatter(text);
@@ -1123,6 +1129,7 @@ document.addEventListener("click", (e) => {
     scrollToAnchor(anchor);
   }
   function scrollToAnchor(anchor) {
+    releasePosition();
     const target = findAnchor(anchor);
     if (target) target.scrollIntoView({ block: "start" });
     else if (!anchor) el.reader.scrollTop = 0;
@@ -1223,9 +1230,9 @@ document.addEventListener("click", (e) => {
       state.stamps.set(f.path, file.lastModified);
       contentCache.delete(f.id);
       const before = blockCounts($("#readerInner"));
-      const top = el.reader.scrollTop;
+      const pos = readingPosition();
       renderDocument(f, text);
-      el.reader.scrollTop = top;
+      returnTo(pos);
       const changed = markChanges($("#readerInner"), before);
       toast(changed
         ? `Reloaded ${f.name} · ${changed} change${changed === 1 ? "" : "s"} highlighted`
@@ -1458,25 +1465,64 @@ document.addEventListener("click", (e) => {
   }
 
   // ---------------------------------------------------------------
-  // Scroll memory: where you were in each file, for as long as the tab is open
+  // Scroll memory: where you were in each file, for as long as the tab is open. A position is the
+  // block at the top of the reader and how far into it you were, not a pixel offset, so it
+  // survives images above it loading late, and edits above it when the file reloads.
   // ---------------------------------------------------------------
-  const SCROLL_KEY = "mdviewer.scroll.v1";
+  const SCROLL_KEY = "mdviewer.scroll.v2";
   let scrollMemory = {};
   try { scrollMemory = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "{}"); } catch (_) {}
   let scrollSaveT = null;
 
   const scrollKey = f => `${state.rootName}|${f.path}`;
+  const positionKey = block => blockKey(block).slice(0, 160);
   function rememberedScroll(f) {
     return scrollMemory[scrollKey(f)];
   }
   function rememberScroll() {
-    const f = activeFile();
-    if (!f || !$("#readerInner")) return;
-    scrollMemory[scrollKey(f)] = Math.round(el.reader.scrollTop);
     clearTimeout(scrollSaveT);
-    scrollSaveT = setTimeout(() => {
-      try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify(scrollMemory)); } catch (_) {}
-    }, 300);
+    const f = activeFile(), pos = readingPosition();
+    if (!pos) return;
+    scrollMemory[scrollKey(f)] = pos;
+    try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify(scrollMemory)); } catch (_) {}
+  }
+  function readingPosition() {
+    const article = $("#readerInner"), f = activeFile();
+    // While another file loads, the one on screen isn't the active file.
+    if (!article || !f || article.dataset.path !== f.path) return null;
+    const top = el.reader.getBoundingClientRect().top;
+    const blocks = readingBlocks(article);
+    const index = blocks.findIndex(b => b.getBoundingClientRect().bottom > top);
+    if (index < 0) return null;
+    return { index, key: positionKey(blocks[index]), offset: Math.round(top - blocks[index].getBoundingClientRect().top) };
+  }
+
+  // Go back to a position and hold it there while images above it load, until you scroll, click or type.
+  const USER_INPUT = ["wheel", "touchstart", "keydown", "pointerdown"];
+  let releasePosition = () => {};
+  function returnTo(pos) {
+    releasePosition();
+    const article = $("#readerInner");
+    const blocks = readingBlocks(article);
+    if (!pos || !blocks.length) return;
+    // The same block if it's still there (the nearest one, if it repeats), else whatever is at its index now.
+    let best = -1;
+    blocks.forEach((b, i) => {
+      if (positionKey(b) === pos.key && (best < 0 || Math.abs(i - pos.index) < Math.abs(best - pos.index))) best = i;
+    });
+    const block = blocks[best >= 0 ? best : Math.min(pos.index, blocks.length - 1)];
+    const align = () => { el.reader.scrollTop += block.getBoundingClientRect().top - el.reader.getBoundingClientRect().top + pos.offset; };
+    const release = () => {
+      clearTimeout(timer);
+      article.removeEventListener("load", align, true);
+      USER_INPUT.forEach(type => window.removeEventListener(type, release, true));
+      releasePosition = () => {};
+    };
+    const timer = setTimeout(release, 5000);
+    article.addEventListener("load", align, true);
+    USER_INPUT.forEach(type => window.addEventListener(type, release, { capture: true, passive: true }));
+    releasePosition = release;
+    align();
   }
 
   // ---------------------------------------------------------------
@@ -2233,7 +2279,9 @@ document.addEventListener("click", (e) => {
   });
   let spyFrame = 0;
   el.reader.addEventListener("scroll", () => {
-    if (!spyFrame) spyFrame = requestAnimationFrame(() => { spyFrame = 0; syncOutline(); rememberScroll(); });
+    if (!spyFrame) spyFrame = requestAnimationFrame(() => { spyFrame = 0; syncOutline(); });
+    clearTimeout(scrollSaveT);
+    scrollSaveT = setTimeout(rememberScroll, 300);
   }, { passive: true });
 
   window.addEventListener("popstate", () => {
