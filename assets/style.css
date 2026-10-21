@@ -424,6 +424,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   opacity: 0;
 }
 .file-row:hover .remove, .file-row:focus-within .remove { opacity: 1; }
+/* Changed on disk since you last opened it */
+.file-row.unseen { color: var(--ink); }
+.file-row.unseen .name { font-weight: 600; }
+.file-row.unseen .dot-mark,
+.dir-row .pip {
+  background: var(--warning-accent, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--warning-accent, var(--accent)), transparent 75%);
+}
+.dir-row .pip { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; }
 .file-row .remove:hover { background: var(--surface-2); color: var(--danger); }
 
 /* Main */
@@ -717,6 +726,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   font-family: var(--sans);
   font-size: .8em;
 }
+/* Blocks that changed in the last live reload. Shadows rather than backgrounds,
+   so code blocks and callouts keep their own fill once the tint fades. */
+.md { --change-tint: color-mix(in oklab, var(--warning-accent, var(--accent)) 24%, transparent); }
+/* First shadow: a 3px bar in the left margin, like an editor's change gutter.
+   The highlight appears at once; only the fade is animated. */
+.md .changed {
+  box-shadow: -9px 0 0 -6px var(--warning-accent, var(--accent)), 0 0 0 5px var(--change-tint), inset 0 0 0 999px var(--change-tint);
+}
+.md .changed.settled,
+.md tr.changed.settled > * { transition: box-shadow 1.2s ease; }
+.md .changed.settled { box-shadow: -9px 0 0 -6px transparent, 0 0 0 5px transparent, inset 0 0 0 999px transparent; }
+.md :is(p, li, h1, h2, h3, h4, h5, h6).changed { border-radius: 3px; }
+.md blockquote.callout.changed {
+  box-shadow: inset 3px 0 0 var(--callout-accent, var(--accent)), 0 0 0 5px var(--change-tint), inset 0 0 0 999px var(--change-tint);
+}
+.md blockquote.callout.changed.settled {
+  box-shadow: inset 3px 0 0 var(--callout-accent, var(--accent)), 0 0 0 5px transparent, inset 0 0 0 999px transparent;
+}
+.md tr.changed { box-shadow: none; }
+.md tr.changed > * { box-shadow: inset 0 0 0 999px var(--change-tint); }
+.md tr.changed.settled > * { box-shadow: inset 0 0 0 999px transparent; }
 mark.hit {
   background: color-mix(in oklab, var(--warning-accent, var(--accent)) 38%, transparent);
   color: inherit;
@@ -1079,4 +1109,5 @@ body.dragging .splash-drop { border-color: var(--accent); background: var(--acce
   .md pre { white-space: pre-wrap; }
   .md h1, .md h2, .md h3, .md h4 { break-after: avoid; }
   .md pre, .md table, .md img, .md blockquote { break-inside: avoid; }
+  .md .changed:not(.callout), .md tr.changed > * { box-shadow: none !important; }
 }

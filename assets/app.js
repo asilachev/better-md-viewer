@@ -44,6 +44,8 @@ document.addEventListener("click", (e) => {
     removed: new Set(),  // paths the user removed from the list, so rescans don't bring them back
     activeId: null,
     activeStamp: 0,      // lastModified of the open file
+    stamps: new Map(),   // lastModified of each file as last seen (live folders only)
+    unseen: new Set(),   // paths that changed or appeared on disk since you last opened them
     activeFolderKey: null,
     recents: [],
     searchQuery: "",
@@ -335,6 +337,11 @@ document.addEventListener("click", (e) => {
     lastScanMs = Date.now() - scan.started;
     el.splashResume.hidden = true;
     setFiles(scan.files);
+    // Baseline for marking files that change later; reads run in the background.
+    if (handle) readStamps(state.files).then(stamps => {
+      if (state.root !== handle) return;
+      for (const [path, stamp] of stamps) if (!state.stamps.has(path)) state.stamps.set(path, stamp);
+    });
     state.activeFolderKey = await rememberFolder({ key: recentKey, name, source, handle, fileCount: scan.files.length });
     const route = parseRoute();
     const first = pickInitialFile(state.files, route && route.path, lastFilePath);
@@ -438,6 +445,8 @@ document.addEventListener("click", (e) => {
     state.files = sortFiles(arr);
     state.activeId = null;
     state.removed = new Set();
+    state.stamps = new Map();
+    state.unseen = new Set();
     state.expanded = {};
     state.filterCollapsed = {};
     state.searchQuery = "";
@@ -485,6 +494,7 @@ document.addEventListener("click", (e) => {
     if (idx < 0) return;
     const [f] = state.files.splice(idx, 1);
     if (f.fromRoot) state.removed.add(f.path);
+    state.unseen.delete(f.path);
     contentCache.delete(id);
     renderFiles();
     renderTopMeta();
@@ -501,6 +511,8 @@ document.addEventListener("click", (e) => {
     state.root = null;
     state.activeId = null;
     state.activeFolderKey = null;
+    state.stamps = new Map();
+    state.unseen = new Set();
     contentCache.clear();
     renderFiles();
     renderTopMeta();
@@ -562,17 +574,20 @@ document.addEventListener("click", (e) => {
   }
 
   function buildTree(files) {
-    const root = { name: "", path: "", dirs: new Map(), files: [], count: 0 };
+    const root = { name: "", path: "", dirs: new Map(), files: [], count: 0, unseen: 0 };
     for (const f of files) {
+      const fresh = state.unseen.has(f.path) ? 1 : 0;
       let node = root;
       node.count++;
+      node.unseen += fresh;
       for (const name of f.group ? f.group.split("/") : []) {
         let next = node.dirs.get(name);
         if (!next) {
-          next = { name, path: node.path ? node.path + "/" + name : name, dirs: new Map(), files: [], count: 0 };
+          next = { name, path: node.path ? node.path + "/" + name : name, dirs: new Map(), files: [], count: 0, unseen: 0 };
           node.dirs.set(name, next);
         }
         next.count++;
+        next.unseen += fresh;
         node = next;
       }
       node.files.push(f);
@@ -726,6 +741,7 @@ document.addEventListener("click", (e) => {
       head.innerHTML = `
         <span class="twist">${ICON_CHEVRON}</span>
         <span class="name"></span>
+        ${dir.unseen ? `<span class="pip" title="${dir.unseen} changed since you last opened ${dir.unseen === 1 ? "it" : "them"}"></span>` : ""}
         <span class="count">${dir.count}</span>
       `;
       $(".name", head).textContent = label;
@@ -746,10 +762,12 @@ document.addEventListener("click", (e) => {
 
   function renderFileRow(f, depth, hits) {
     const row = document.createElement("div");
-    row.className = "tree-row file-row" + (f.id === state.activeId ? " active" : "");
+    const unseen = state.unseen.has(f.path);
+    row.className = "tree-row file-row" + (f.id === state.activeId ? " active" : "") + (unseen ? " unseen" : "");
     row.dataset.id = f.id;
     row.style.setProperty("--depth", depth);
     row.title = f.path;
+    if (unseen) row.setAttribute("aria-description", "changed since you last opened it");
     const n = hits && hits.get(f.id);
     row.innerHTML = `
       <button class="row-main" type="button"><span class="twist"><span class="dot-mark"></span></span><span class="name"></span></button>
@@ -801,6 +819,7 @@ document.addEventListener("click", (e) => {
     const gen = ++openGen;
     state.activeId = id;
     revealFile(f);
+    if (state.unseen.delete(f.path)) renderFiles();
     syncActiveRow();
     renderCrumbs(f);
     document.title = `${f.name} — ${APP_NAME}`;
@@ -817,6 +836,7 @@ document.addEventListener("click", (e) => {
     }
     if (gen !== openGen) return;   // another file was opened while this one was loading
     state.activeStamp = stamp;
+    if (f.kind === "handle") state.stamps.set(f.path, stamp);
     renderDocument(f, text);
 
     const hit = $("mark.hit", el.reader);
@@ -830,6 +850,7 @@ document.addEventListener("click", (e) => {
 
   function renderDocument(f, text) {
     const gen = ++renderGen;
+    if (changeObserver) { changeObserver.disconnect(); changeObserver = null; }
     const article = document.createElement("article");
     article.className = "reader-inner md";
     article.id = "readerInner";
@@ -1194,11 +1215,16 @@ document.addEventListener("click", (e) => {
       const text = await file.text();
       if (f !== activeFile()) return;
       state.activeStamp = file.lastModified;
+      state.stamps.set(f.path, file.lastModified);
       contentCache.delete(f.id);
+      const before = blockCounts($("#readerInner"));
       const top = el.reader.scrollTop;
       renderDocument(f, text);
       el.reader.scrollTop = top;
-      toast(`Reloaded ${f.name} — it changed on disk`, 1600);
+      const changed = markChanges($("#readerInner"), before);
+      toast(changed
+        ? `Reloaded ${f.name} · ${changed} change${changed === 1 ? "" : "s"} highlighted`
+        : `Reloaded ${f.name} — it changed on disk`, 2000);
     } catch (e) {
       if (e && e.name === "NotFoundError") rescanFolder();
     } finally {
@@ -1211,8 +1237,9 @@ document.addEventListener("click", (e) => {
     rescanning = true;
     try {
       const scan = await scanDirHandle(state.root, "", newScan({ quiet: !manual }));
+      const stamps = await readStamps(scan.files);
       lastScanMs = Date.now() - scan.started;
-      applyRescan(scan, manual);
+      applyRescan(scan, stamps, manual);
     } catch (e) {
       console.warn(e);
       if (manual) toast("Could not rescan the folder");
@@ -1221,33 +1248,112 @@ document.addEventListener("click", (e) => {
     }
   }
 
-  function applyRescan(scan, manual) {
+  function applyRescan(scan, stamps, manual) {
     for (const [p, src] of scan.assets) state.assets.set(p, src);
     const before = new Set(state.files.filter(f => f.fromRoot).map(f => f.path));
     const found = scan.files.filter(f => !state.removed.has(f.path));
     const foundPaths = new Set(found.map(f => f.path));
     const added = found.filter(f => !before.has(f.path));
     const gone = state.files.filter(f => f.fromRoot && !foundPaths.has(f.path));
-    if (!added.length && !gone.length) {
-      if (manual) toast("No new or removed files");
+    const active = activeFile();
+
+    // Files edited since you last looked, and new ones, stay marked until opened.
+    // The open file is skipped: live reload shows its changes in place.
+    let edited = 0;
+    for (const [path, stamp] of stamps) {
+      const seen = state.stamps.get(path);
+      state.stamps.set(path, stamp);
+      if (seen === undefined || seen === stamp || state.removed.has(path) || (active && active.path === path)) continue;
+      if (!state.unseen.has(path)) { state.unseen.add(path); edited++; }
+    }
+    for (const f of added) state.unseen.add(f.path);
+
+    if (!added.length && !gone.length && !edited) {
+      if (manual) toast("No new, changed or removed files");
       return;
     }
     for (const f of added) f.fromRoot = true;
     const goneIds = new Set(gone.map(f => f.id));
-    const active = activeFile();
     state.files = sortFiles([...state.files.filter(f => !goneIds.has(f.id)), ...added]);
-    for (const id of goneIds) contentCache.delete(id);
+    for (const f of gone) {
+      contentCache.delete(f.id);
+      state.unseen.delete(f.path);
+      state.stamps.delete(f.path);
+    }
     renderFiles();
     renderTopMeta();
     if (active && goneIds.has(active.id)) {
       state.activeId = null;
       toast(`${active.name} was moved or deleted`, 3000);
-    } else {
+    } else if (added.length || gone.length || manual) {
       const parts = [];
       if (added.length) parts.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
+      if (edited) parts.push(`${edited} changed`);
       if (gone.length) parts.push(`${gone.length} removed`);
       toast(parts.join(" · "));
     }
+  }
+
+  // lastModified of every file read through a live handle.
+  async function readStamps(files) {
+    const stamps = new Map();
+    const queue = files.filter(f => f.kind === "handle");
+    let next = 0;
+    const worker = async () => {
+      while (next < queue.length) {
+        const f = queue[next++];
+        try { stamps.set(f.path, (await f.handle.getFile()).lastModified); } catch (_) {}
+      }
+    };
+    await Promise.all(Array.from({ length: 8 }, worker));
+    return stamps;
+  }
+
+  // The pieces of a document a reader notices changing: paragraphs, list items, table rows, code blocks…
+  function readingBlocks(article) {
+    const blocks = [];
+    for (const node of article ? article.children : []) {
+      if (node.matches(".remote-notice")) continue;
+      if (node.matches("ul, ol")) blocks.push(...node.querySelectorAll(":scope > li"));
+      else if (node.matches("table, section")) blocks.push(...node.querySelectorAll("tr, li"));
+      else blocks.push(node);
+    }
+    return blocks;
+  }
+  function blockKey(node) {
+    const media = $$("img", node).map(i => i.getAttribute("data-local-src") || i.getAttribute("data-remote-src") || i.getAttribute("src") || "");
+    return `${node.tagName}|${node.textContent.replace(/\s+/g, " ").trim()}|${media.join(",")}`;
+  }
+  function blockCounts(article) {
+    const counts = new Map();
+    for (const node of readingBlocks(article)) {
+      const key = blockKey(node);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }
+
+  // Tint the blocks that weren't in the previous render; each fades a few seconds after you've seen it.
+  let changeObserver = null;
+  function markChanges(article, before) {
+    if (changeObserver) changeObserver.disconnect();
+    const changed = readingBlocks(article).filter(node => {
+      const key = blockKey(node), n = before.get(key) || 0;
+      if (n) before.set(key, n - 1);
+      return !n;
+    });
+    const observer = changeObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        setTimeout(() => entry.target.classList.add("settled"), 4000);
+      }
+    }, { root: el.reader });
+    for (const node of changed) {
+      node.classList.add("changed");
+      observer.observe(node);
+    }
+    return changed.length;
   }
 
   // ---------------------------------------------------------------
