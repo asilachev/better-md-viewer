@@ -345,7 +345,7 @@ document.addEventListener("click", (e) => {
     state.activeFolderKey = await rememberFolder({ key: recentKey, name, source, handle, fileCount: scan.files.length });
     const route = parseRoute();
     const first = pickInitialFile(state.files, route && route.path, lastFilePath);
-    if (first) openFile(first.id, { anchor: route && route.path === first.path ? route.anchor : "", nav: "replace" });
+    if (first) openFile(first.id, { anchor: route && route.path === first.path ? route.anchor : "", nav: "replace", returning: true });
   }
 
   // The file in the URL, else where you left off, else the folder's README or index, else the first file.
@@ -813,11 +813,14 @@ document.addEventListener("click", (e) => {
   let renderGen = 0;
   let blobUrls = [];
 
-  async function openFile(id, { anchor = "", nav = "push" } = {}) {
+  // `returning` (reload, back/forward): where you were beats the URL's #heading, as in a browser.
+  async function openFile(id, { anchor = "", nav = "push", returning = false } = {}) {
     const f = state.files.find(x => x.id === id);
     if (!f) return;
+    rememberScroll();   // the file being left
     const gen = ++openGen;
     state.activeId = id;
+    const savedTop = rememberedScroll(f);
     revealFile(f);
     if (state.unseen.delete(f.path)) renderFiles();
     syncActiveRow();
@@ -840,9 +843,10 @@ document.addEventListener("click", (e) => {
     renderDocument(f, text);
 
     const hit = $("mark.hit, .tag-token.hit", el.reader);
-    if (anchor) scrollToAnchor(anchor);
+    if (returning && savedTop !== undefined) el.reader.scrollTop = savedTop;
+    else if (anchor) scrollToAnchor(anchor);
     else if (hit) hit.scrollIntoView({ block: "center" });
-    else el.reader.scrollTop = 0;
+    else el.reader.scrollTop = savedTop || 0;
     const focused = document.activeElement;
     if (!focused || !focused.closest("input, textarea, select")) el.reader.focus({ preventScroll: true });
     rememberLastFile(f);
@@ -1451,6 +1455,28 @@ document.addEventListener("click", (e) => {
     $(".resume-name", el.splashResume).textContent = last.name;
     $(".resume-file", el.splashResume).textContent = last.lastFilePath || "";
     el.splashResume.hidden = false;
+  }
+
+  // ---------------------------------------------------------------
+  // Scroll memory: where you were in each file, for as long as the tab is open
+  // ---------------------------------------------------------------
+  const SCROLL_KEY = "mdviewer.scroll.v1";
+  let scrollMemory = {};
+  try { scrollMemory = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || "{}"); } catch (_) {}
+  let scrollSaveT = null;
+
+  const scrollKey = f => `${state.rootName}|${f.path}`;
+  function rememberedScroll(f) {
+    return scrollMemory[scrollKey(f)];
+  }
+  function rememberScroll() {
+    const f = activeFile();
+    if (!f || !$("#readerInner")) return;
+    scrollMemory[scrollKey(f)] = Math.round(el.reader.scrollTop);
+    clearTimeout(scrollSaveT);
+    scrollSaveT = setTimeout(() => {
+      try { sessionStorage.setItem(SCROLL_KEY, JSON.stringify(scrollMemory)); } catch (_) {}
+    }, 300);
   }
 
   // ---------------------------------------------------------------
@@ -2207,7 +2233,7 @@ document.addEventListener("click", (e) => {
   });
   let spyFrame = 0;
   el.reader.addEventListener("scroll", () => {
-    if (!spyFrame) spyFrame = requestAnimationFrame(() => { spyFrame = 0; syncOutline(); });
+    if (!spyFrame) spyFrame = requestAnimationFrame(() => { spyFrame = 0; syncOutline(); rememberScroll(); });
   }, { passive: true });
 
   window.addEventListener("popstate", () => {
@@ -2215,7 +2241,7 @@ document.addEventListener("click", (e) => {
     const f = route && fileByPath(route.path);
     if (!f) return;
     if (f.id === state.activeId) scrollToAnchor(route.anchor);
-    else openFile(f.id, { anchor: route.anchor, nav: "none" });
+    else openFile(f.id, { anchor: route.anchor, nav: "none", returning: true });
   });
 
   window.addEventListener("dragenter", onDragEnter);
