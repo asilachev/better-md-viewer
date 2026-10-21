@@ -1079,7 +1079,7 @@ document.addEventListener("click", (e) => {
   // app's own URL, so new-tab clicks work too), other files open from the folder.
   function wireLinks(root, f) {
     $$("a[href]", root).forEach(a => {
-      if (a.classList.contains("wiki-link")) { wireWikiLink(a); return; }
+      if (a.classList.contains("wiki-link")) { wireWikiLink(a, f); return; }
       const href = a.getAttribute("href");
       if (HAS_SCHEME.test(href)) {
         if (/^(https?:)?\/\//i.test(href)) {
@@ -1106,9 +1106,10 @@ document.addEventListener("click", (e) => {
     a.dataset.missing = path;
     a.title = message;
   }
-  function wireWikiLink(a) {
+  function wireWikiLink(a, f) {
     const [name, heading = ""] = (a.dataset.wikiTarget || "").split("#");
-    const doc = findWikiFile(name);
+    // "[[#Heading]]" is a heading in the same note.
+    const doc = name.trim() ? findWikiFile(name) : f;
     if (doc) pointAt(a, doc, heading.trim() ? githubSlug(heading) : "");
     else markBroken(a, name, `No file named "${name.trim()}" in this folder`);
   }
