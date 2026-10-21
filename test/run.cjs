@@ -783,6 +783,25 @@ const expandAll = async page => { await page.click("#expandAllBtn"); await settl
   check("GG2 nothing changes when it's off", [await motionOf(pg2), await drawerOpenMotion(pg2)], [["opacity, transform", 8, "0.16s, 0s", "0.12s"], "0.16s"]);
   await ctxG2.close();
 
+  // ---------------- HH. Obsidian embeds (#15)
+  const ph = await openFixture(ctx, { beforeOpen: { hash: "#/notes/trip.md" }, rootName: "vault", files: {
+    "notes/trip.md": "# Trip\n\nPhoto: ![[photo.png]]\n\nSized: ![[photo.png|200]]\n\nBy path: ![[attachments/photo.png|40x30]]\n\nMissing: ![[nowhere.png]]\n\nA note: ![[Packing list]]\n\nThe image itself: [[photo.png]]\n\nA plain link: [[Packing list|the list]]",
+    "notes/Packing list.md": "# Packing list\n\n- socks",
+    "attachments/photo.png": { b64: PNG, type: "image/png" },
+  } });
+  await ph.waitForFunction(() => [...document.querySelectorAll("#readerInner img")].filter(i => i.src.startsWith("blob:")).length === 3, null, { timeout: 5000 }).catch(() => {});
+  const embeds = await ph.evaluate(() => [...document.querySelectorAll("#readerInner p")].map(p => ({
+    text: p.textContent.trim(),
+    imgs: [...p.querySelectorAll("img")].map(i => `${i.src.startsWith("blob:") ? `loaded ${i.naturalWidth}px` : i.className}${i.getAttribute("width") ? ` ${i.getAttribute("width")}x${i.getAttribute("height") || "auto"}` : ""}`),
+    links: [...p.querySelectorAll("a")].map(a => a.dataset.path ? `doc:${a.dataset.path}` : a.dataset.asset ? `asset:${a.dataset.asset}` : "broken"),
+  })));
+  const para = label => embeds.find(e => e.text.startsWith(label)) || { text: "", imgs: [], links: [] };
+  check("HH1 ![[photo.png]] shows the image, found by name or path, sized by |200 and |40x30", [para("Photo").imgs, para("Sized").imgs, para("By path").imgs], [["loaded 1px"], ["loaded 1px 200xauto"], ["loaded 1px 40x30"]]);
+  check("HH2 a missing image shows as missing, with its name", [para("Missing").imgs, await ph.evaluate(() => document.querySelector('#readerInner img[alt="nowhere.png"]')?.title || null)], [["missing-asset"], "Not found in this folder: notes/nowhere.png"]);
+  check("HH3 ![[Note]] is a link to the note, with no stray !", [para("A note").text, para("A note").links], ["A note: Packing list", ["doc:notes/Packing list.md"]]);
+  check("HH4 [[photo.png]] links to the image; [[Note|label]] still works", [para("The image itself").links, para("A plain link").text, para("A plain link").links], [["asset:attachments/photo.png"], "A plain link: the list", ["doc:notes/Packing list.md"]]);
+  await ph.close();
+
   // ---------------- S. Errors across the run
   check("S1 no page errors or CSP violations", page.logs.filter(l => !/ERR_NAME_NOT_RESOLVED|ERR_INTERNET|example\.com|net::ERR/.test(l)), []);
 

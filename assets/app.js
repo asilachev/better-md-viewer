@@ -920,6 +920,7 @@
     highlightCodeBlocks(article);
     addCopyButtons(article);
     wireLinks(article, f);
+    wireEmbeds(article, f);
     loadLocalMedia(article, f, gen);
     if (held) showRemoteNotice(article, held, f);
     renderOutline(article, f);
@@ -1139,8 +1140,25 @@
     const [name, heading = ""] = (a.dataset.wikiTarget || "").split("#");
     // "[[#Heading]]" is a heading in the same note.
     const doc = name.trim() ? findWikiFile(name) : f;
+    const asset = !doc && findVaultFile(f.path, name);
     if (doc) pointAt(a, doc, heading.trim() ? githubSlug(heading) : "");
+    else if (asset) a.dataset.asset = asset;
     else markBroken(a, name, `No file named "${name.trim()}" in this folder`);
+  }
+  // Obsidian names other files by their path from the note's folder or the vault, or by name alone.
+  function findVaultFile(fromPath, target) {
+    const name = target.trim().replace(/^\/+/, "");
+    const path = [resolvePath(fromPath, name).path, name].find(p => findAsset(p));
+    if (path || name.includes("/")) return path || null;
+    const lower = name.toLowerCase();
+    const sameName = [...state.assets.keys()].filter(p => p.slice(p.lastIndexOf("/") + 1).toLowerCase() === lower);
+    return sameName.sort((x, y) => x.length - y.length || collator.compare(x, y))[0] || null;
+  }
+  function wireEmbeds(root, f) {
+    $$("img[data-embed]", root).forEach(img => {
+      const path = findVaultFile(f.path, img.dataset.embed);
+      img.setAttribute("data-local-src", path ? "/" + path.split("/").map(encodeURIComponent).join("/") : img.dataset.embed);
+    });
   }
 
   function followDocLink(path, anchor) {
@@ -1825,21 +1843,42 @@
     }, 1500));
   }
 
+  // Obsidian embeds: "![[photo.png]]" is an image, sized by "|200" or "|200x100"; any other embed shows as a link.
+  const IMAGE_FILE = /\.(png|jpe?g|gif|svg|webp|avif|bmp)$/i;
+  function embeddedImage(target, options) {
+    const img = document.createElement("img");
+    img.alt = target.slice(target.lastIndexOf("/") + 1);
+    img.dataset.embed = target;
+    for (const part of (options || "").split("|").map(s => s.trim()).filter(Boolean)) {
+      const size = part.match(/^(\d+)(?:x(\d+))?$/);
+      if (!size) img.alt = part;
+      else {
+        img.setAttribute("width", size[1]);
+        if (size[2]) img.setAttribute("height", size[2]);
+      }
+    }
+    return img;
+  }
+
   function buildInlineTokenFragment(text) {
-    const pattern = /(\[\[([^\]|]+)(?:\|([^\]]+))?\]\])|(^|[\s(])#([_\p{Letter}\p{Number}][_\p{Letter}\p{Number}/-]*)/gu;
+    const pattern = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|(^|[\s(])#([_\p{Letter}\p{Number}][_\p{Letter}\p{Number}/-]*)/gu;
     const fragment = document.createDocumentFragment();
     let index = 0;
     let match;
 
     while ((match = pattern.exec(text))) {
+      const [whole, embed, wikiTarget, extra] = match;
       // Tags need a letter: "#123" is an issue or PR number.
-      if (!match[1] && !/\p{Letter}/u.test(match[5])) continue;
+      if (!wikiTarget && !/\p{Letter}/u.test(match[5])) continue;
       const start = match.index;
       if (start > index) fragment.append(document.createTextNode(text.slice(index, start)));
 
-      if (match[1]) {
-        const target = match[2].trim();
-        const label = (match[3] || target).trim();
+      if (wikiTarget && embed && IMAGE_FILE.test(wikiTarget.trim())) {
+        fragment.append(embeddedImage(wikiTarget.trim(), extra));
+        index = start + whole.length;
+      } else if (wikiTarget) {
+        const target = wikiTarget.trim();
+        const label = (extra || target).trim();
         const link = document.createElement("a");
         link.className = "wiki-link";
         link.href = "#";
@@ -1847,7 +1886,7 @@
         link.title = target;
         link.textContent = label;
         fragment.append(link);
-        index = start + match[1].length;
+        index = start + whole.length;
       } else {
         const prefix = match[4] || "";
         const tag = match[5];
