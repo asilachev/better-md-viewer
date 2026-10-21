@@ -839,7 +839,7 @@ document.addEventListener("click", (e) => {
     if (f.kind === "handle") state.stamps.set(f.path, stamp);
     renderDocument(f, text);
 
-    const hit = $("mark.hit", el.reader);
+    const hit = $("mark.hit, .tag-token.hit", el.reader);
     if (anchor) scrollToAnchor(anchor);
     else if (hit) hit.scrollIntoView({ block: "center" });
     else el.reader.scrollTop = 0;
@@ -1501,9 +1501,11 @@ document.addEventListener("click", (e) => {
     $$("mark.hit", root).forEach(m => m.replaceWith(...m.childNodes));
     root.normalize();
     const q = state.contentSearch ? state.searchQuery.trim().toLowerCase() : "";
+    // A matching tag lights up as a whole chip rather than getting a mark inside it.
+    $$(".tag-token", root).forEach(t => t.classList.toggle("hit", !!q && t.textContent.toLowerCase().includes(q)));
     if (!q) return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: node => node.parentElement.closest(".remote-notice, .heading-anchor")
+      acceptNode: node => node.parentElement.closest(".remote-notice, .heading-anchor, .tag-token")
         ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
     });
     const nodes = [];
@@ -1738,8 +1740,10 @@ document.addEventListener("click", (e) => {
         const tag = match[5];
         if (prefix) fragment.append(document.createTextNode(prefix));
 
-        const chip = document.createElement("span");
+        const chip = document.createElement("button");
+        chip.type = "button";
         chip.className = "tag-token";
+        chip.title = `Find files tagged #${tag}`;
         chip.textContent = `#${tag}`;
         fragment.append(chip);
         index = start + prefix.length + tag.length + 1;
@@ -2157,17 +2161,30 @@ document.addEventListener("click", (e) => {
     runSearch("");
     el.searchInput.blur();
   });
+  function setContentSearch(on) {
+    state.contentSearch = on;
+    el.contentToggle.setAttribute("aria-pressed", String(on));
+    el.searchInput.placeholder = on ? "Search names and contents…" : "Filter files…";
+  }
   el.contentToggle.addEventListener("click", () => {
-    state.contentSearch = !state.contentSearch;
-    el.contentToggle.setAttribute("aria-pressed", String(state.contentSearch));
-    el.searchInput.placeholder = state.contentSearch ? "Search names and contents…" : "Filter files…";
+    setContentSearch(!state.contentSearch);
     runSearch(el.searchInput.value);
     el.searchInput.focus();
   });
+  // A tag chip searches the folder's contents for that tag.
+  function findTag(tag) {
+    if (el.sidebarToggle.getAttribute("aria-expanded") === "false") toggleSidebar();
+    setContentSearch(true);
+    clearTimeout(searchT);
+    el.searchInput.value = tag;
+    runSearch(tag);
+  }
 
   el.reader.addEventListener("click", (e) => {
     const copy = e.target.closest && e.target.closest(".copy-code");
     if (copy) { copyCode(copy); return; }
+    const tag = e.target.closest && e.target.closest(".tag-token");
+    if (tag) { findTag(tag.textContent); return; }
     const a = e.target.closest && e.target.closest("a");
     if (!a || !el.reader.contains(a)) return;
     if (a.dataset.path !== undefined) {

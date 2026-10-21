@@ -776,6 +776,10 @@ mark.hit {
   color: inherit;
   border-radius: 2px;
 }
+.md .tag-token.hit {
+  background: color-mix(in oklab, var(--warning-accent, var(--accent)) 38%, transparent);
+  color: var(--ink);
+}
 
 /* Tags and wiki links */
 .tag-token,
@@ -793,7 +797,8 @@ mark.hit {
   vertical-align: baseline;
   white-space: nowrap;
 }
-.tag-token { background: var(--accent-2); color: var(--accent); }
+.tag-token { background: var(--accent-2); color: var(--accent); cursor: pointer; }
+.tag-token:hover { background: color-mix(in oklab, var(--accent-2), var(--accent) 18%); }
 .md .wiki-link {
   background: var(--surface);
   color: var(--ink-2);
