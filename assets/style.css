@@ -1170,5 +1170,6 @@ body.dragging .splash-drop { border-color: var(--accent); background: var(--acce
   .md h1, .md h2, .md h3, .md h4 { break-after: avoid; }
   .md pre, .md table, .md img, .md blockquote { break-inside: avoid; }
   .md .changed:not(.callout), .md tr.changed > * { box-shadow: none !important; }
+  .md .callout.changed { box-shadow: inset 3px 0 0 var(--callout-accent, var(--accent)) !important; }
   .md .changed::before, .md .code-block::before { content: none !important; }
 }

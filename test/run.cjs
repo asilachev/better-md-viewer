@@ -815,6 +815,19 @@ const expandAll = async page => { await page.click("#expandAllBtn"); await settl
   check("II3 a fold mark and a title-only callout work too", [titled[2], titled[3]], [{ title: "Folded question?", custom: true, bold: false, body: "Answer." }, { title: "Title only", custom: true, bold: false, body: "" }]);
   await pi.close();
 
+  // ---------------- JJ. Printing right after a live reload (#17)
+  const PRINT_DOC = `# Print\n\n> [!note]\n> Unchanged.\n\n${filler}\n\n> [!warning]\n> Far down.`;
+  const pj = await openFixture(ctx, { files: { "print.md": PRINT_DOC } });
+  await pj.evaluate(d => window.__fake.edit("print.md", d.replace("Far down.", "Far down, changed.")), PRINT_DOC);
+  await pj.waitForFunction(() => document.querySelector("#readerInner .callout.changed"), null, { timeout: 5000 }).catch(() => {});
+  await pj.emulateMedia({ media: "print" });
+  check("JJ1 a changed callout you haven't scrolled to prints like any other callout", await pj.evaluate(() => {
+    const accentOnly = /^rgba?\([^)]*\) 3px 0px 0px 0px inset$/;
+    const [plain, changed] = document.querySelectorAll("#readerInner .callout");
+    return [changed.matches(".changed:not(.settled)"), accentOnly.test(getComputedStyle(plain).boxShadow), accentOnly.test(getComputedStyle(changed).boxShadow)];
+  }), [true, true, true]);
+  await pj.close();
+
   // ---------------- S. Errors across the run
   check("S1 no page errors or CSP violations", page.logs.filter(l => !/ERR_NAME_NOT_RESOLVED|ERR_INTERNET|example\.com|net::ERR/.test(l)), []);
 
