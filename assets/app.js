@@ -47,6 +47,7 @@ document.addEventListener("click", (e) => {
     activeText: "",      // and its text, as last rendered
     stamps: new Map(),   // lastModified of each file as last seen (live folders only)
     unseen: new Set(),   // paths that changed or appeared on disk since you last opened them
+    remoteAllowed: new Set(),   // paths whose remote images you chose to load, while this folder is open
     activeFolderKey: null,
     recents: [],
     searchQuery: "",
@@ -448,6 +449,7 @@ document.addEventListener("click", (e) => {
     state.removed = new Set();
     state.stamps = new Map();
     state.unseen = new Set();
+    state.remoteAllowed = new Set();
     state.expanded = {};
     state.filterCollapsed = {};
     state.searchQuery = "";
@@ -514,6 +516,7 @@ document.addEventListener("click", (e) => {
     state.activeFolderKey = null;
     state.stamps = new Map();
     state.unseen = new Set();
+    state.remoteAllowed = new Set();
     contentCache.clear();
     renderFiles();
     renderTopMeta();
@@ -871,7 +874,7 @@ document.addEventListener("click", (e) => {
       const { frontmatter, body } = splitFrontmatter(text);
       // The fragment belongs to DOMPurify's inert document: nothing in it loads until it is inserted below.
       const frag = DOMPurify.sanitize(renderFrontmatterTable(frontmatter) + marked.parse(body), { ...PURIFY_CFG, RETURN_DOM_FRAGMENT: true });
-      if (tweaks.remoteImages !== "load") held = holdRemoteMedia(frag);
+      if (tweaks.remoteImages !== "load" && !state.remoteAllowed.has(f.path)) held = holdRemoteMedia(frag);
       holdLocalMedia(frag);
       article.append(frag);
     } else {
@@ -889,7 +892,7 @@ document.addEventListener("click", (e) => {
     addCopyButtons(article);
     wireLinks(article, f);
     loadLocalMedia(article, f, gen);
-    if (held) showRemoteNotice(article, held);
+    if (held) showRemoteNotice(article, held, f);
     renderOutline(article, f);
     highlightHits(article);
   }
@@ -923,13 +926,14 @@ document.addEventListener("click", (e) => {
       node.classList.remove("remote-held");
     });
   }
-  function showRemoteNotice(article, count) {
+  // "Load" holds for this file, through live reloads, until another folder is opened.
+  function showRemoteNotice(article, count, f) {
     const bar = document.createElement("div");
     bar.className = "remote-notice";
     bar.setAttribute("role", "note");
     bar.innerHTML = `
       <span>${count} remote image${count === 1 ? "" : "s"} blocked. Loading ${count === 1 ? "it" : "them"} tells the host you opened this file.</span>
-      <button type="button" data-remote="once">Load</button>
+      <button type="button" data-remote="file">Load</button>
       <button type="button" data-remote="always">Always load</button>
     `;
     bar.addEventListener("click", (e) => {
@@ -939,6 +943,8 @@ document.addEventListener("click", (e) => {
         tweaks.remoteImages = "load";
         persistTweaks();
         syncTweakControls();
+      } else {
+        state.remoteAllowed.add(f.path);
       }
       releaseRemoteMedia(article);
       bar.remove();
