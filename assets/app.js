@@ -874,6 +874,7 @@ document.addEventListener("click", (e) => {
     enhanceInlineTokens(article);
     enhanceHeadingAnchors(article);
     highlightCodeBlocks(article);
+    addCopyButtons(article);
     wireLinks(article, f);
     loadLocalMedia(article, f, gen);
     if (held) showRemoteNotice(article, held);
@@ -1314,7 +1315,8 @@ document.addEventListener("click", (e) => {
     const blocks = [];
     for (const node of article ? article.children : []) {
       if (node.matches(".remote-notice")) continue;
-      if (node.matches("ul, ol")) blocks.push(...node.querySelectorAll(":scope > li"));
+      if (node.matches(".code-block")) blocks.push(node.querySelector("pre"));
+      else if (node.matches("ul, ol")) blocks.push(...node.querySelectorAll(":scope > li"));
       else if (node.matches("table, section")) blocks.push(...node.querySelectorAll("tr, li"));
       else blocks.push(node);
     }
@@ -1667,6 +1669,45 @@ document.addEventListener("click", (e) => {
         window.hljs.highlightElement(code);
       } catch (_) {}
     });
+  }
+
+  // The button sits in a wrapper outside the scrolling <pre>, so it stays in the corner.
+  function addCopyButtons(root) {
+    $$("pre:not(.plain)", root).forEach(pre => {
+      const wrap = document.createElement("div");
+      wrap.className = "code-block";
+      pre.replaceWith(wrap);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "copy-code";
+      btn.textContent = "Copy";
+      btn.setAttribute("aria-label", "Copy code");
+      wrap.append(pre, btn);
+    });
+  }
+  const copyTimers = new WeakMap();
+  async function copyCode(btn) {
+    // Without the trailing newline, a pasted command doesn't run before you've looked at it.
+    const text = btn.parentElement.querySelector("pre").textContent.replace(/\n$/, "");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      // Older browsers, or a blocked clipboard API: copy through a hidden textarea.
+      const buffer = document.createElement("textarea");
+      buffer.className = "clipboard-buffer";
+      buffer.value = text;
+      document.body.append(buffer);
+      buffer.select();
+      document.execCommand("copy");
+      buffer.remove();
+    }
+    btn.textContent = "Copied";
+    btn.classList.add("done");
+    clearTimeout(copyTimers.get(btn));
+    copyTimers.set(btn, setTimeout(() => {
+      btn.textContent = "Copy";
+      btn.classList.remove("done");
+    }, 1500));
   }
 
   function buildInlineTokenFragment(text) {
@@ -2116,6 +2157,8 @@ document.addEventListener("click", (e) => {
   });
 
   el.reader.addEventListener("click", (e) => {
+    const copy = e.target.closest && e.target.closest(".copy-code");
+    if (copy) { copyCode(copy); return; }
     const a = e.target.closest && e.target.closest("a");
     if (!a || !el.reader.contains(a)) return;
     if (a.dataset.path !== undefined) {

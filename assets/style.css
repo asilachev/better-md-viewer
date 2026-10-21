@@ -580,6 +580,30 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 }
 .md pre code { padding: 0; background: transparent; color: var(--ink-2); font-size: inherit; }
 .md pre.plain { white-space: pre-wrap; }
+.md .code-block { position: relative; margin: 1.3em 0; }
+.md .code-block pre { margin: 0; }
+.copy-code {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.code-block:hover .copy-code,
+.copy-code:focus-visible,
+.copy-code.done { opacity: 1; }
+.copy-code:hover { background: var(--surface-2); color: var(--ink); }
+.copy-code.done { color: var(--question-accent, var(--accent)); }
+@media (hover: none) { .copy-code { opacity: 1; } }
+.clipboard-buffer { position: fixed; top: 0; left: 0; opacity: 0; pointer-events: none; }
 .md img { max-width: 100%; height: auto; border-radius: var(--radius); }
 .md input[type="checkbox"] { margin-right: 6px; accent-color: var(--accent); }
 
@@ -1103,7 +1127,7 @@ body.dragging .splash-drop { border-color: var(--accent); background: var(--acce
   html, body { height: auto; overflow: visible; background: #fff; }
   .app, .main { display: block; height: auto; width: auto; }
   .topbar, .sidebar, .sidebar-resizer, .crumbs, .outline, .drop-over, .remote-notice,
-  .heading-anchor, .toast, .tweaks, .modal-wrap { display: none !important; }
+  .heading-anchor, .copy-code, .toast, .tweaks, .modal-wrap { display: none !important; }
   .reader { overflow: visible; padding: 0; }
   .reader-inner { max-width: none; font-size: 11pt; }
   .md pre { white-space: pre-wrap; }
