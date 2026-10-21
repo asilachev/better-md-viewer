@@ -57,6 +57,7 @@ document.addEventListener("click", (e) => {
 
   const el = {
     app: $("#app"),
+    sidebar: $("#sidebar"),
     sideSections: $("#sideSections"),
     recentsSection: $("#recentsSection"),
     filesSection: $("#filesSection"),
@@ -1962,7 +1963,10 @@ document.addEventListener("click", (e) => {
   });
   narrow.addEventListener("change", () => { el.app.classList.remove("drawer-open"); applyLayout(); });
   el.app.addEventListener("click", (e) => {
-    if (el.app.classList.contains("drawer-open") && !e.target.closest(".sidebar, #sidebarToggle")) closeDrawer();
+    if (!el.app.classList.contains("drawer-open")) return;
+    // composedPath() still includes the sidebar when the clicked button was re-rendered away.
+    if (e.composedPath().some(n => n === el.sidebar || n === el.sidebarToggle)) return;
+    closeDrawer();
   });
 
   // ---------------------------------------------------------------
