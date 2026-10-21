@@ -190,7 +190,7 @@ document.addEventListener("click", (e) => {
   function newScan({ quiet = false } = {}) {
     let seen = 0;
     return {
-      files: [], assets: new Map(), started: Date.now(), reported: false,
+      files: [], assets: new Map(), skipped: [], started: Date.now(), reported: false,
       tick() {
         if (quiet || ++seen % 250 || Date.now() - this.started < 400) return;
         this.reported = true;
@@ -204,7 +204,7 @@ document.addEventListener("click", (e) => {
       const isDir = ent.kind === "directory";
       if (skipEntry(name, isDir)) continue;
       const rel = prefix ? prefix + "/" + name : name;
-      if (isDir) await scanDirHandle(ent, rel, scan);
+      if (isDir) await scanSubfolder(() => scanDirHandle(ent, rel, scan), rel, scan);
       else if (SUPPORTED.test(name)) scan.files.push(makeFile(rel, "handle", ent));
       else scan.assets.set(rel, ent);
       scan.tick();
@@ -220,7 +220,10 @@ document.addEventListener("click", (e) => {
         const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
         if (!batch.length) break;
         for (const kid of batch) {
-          if (!skipEntry(kid.name, kid.isDirectory)) await scanEntry(kid, rel ? rel + "/" + kid.name : kid.name, scan);
+          if (skipEntry(kid.name, kid.isDirectory)) continue;
+          const path = rel ? rel + "/" + kid.name : kid.name;
+          if (kid.isDirectory) await scanSubfolder(() => scanEntry(kid, path, scan), path, scan);
+          else await scanEntry(kid, path, scan);
         }
       }
     } else if (SUPPORTED.test(ent.name)) {
@@ -230,6 +233,20 @@ document.addEventListener("click", (e) => {
       scan.assets.set(rel, ent);
     }
     scan.tick();
+  }
+
+  // A subfolder the browser won't read (its permissions, say) is left out instead of failing the whole scan.
+  async function scanSubfolder(scanIt, path, scan) {
+    try {
+      await scanIt();
+    } catch (e) {
+      console.warn(`Skipped ${path}`, e);
+      scan.skipped.push(path);
+    }
+  }
+  function reportSkipped(scan) {
+    const n = scan.skipped.length;
+    if (n) toast(`Skipped ${n} folder${n === 1 ? "" : "s"} the browser couldn't read`, 3200);
   }
 
   function fileObject(f) { return f.kind === "handle" ? f.handle.getFile() : Promise.resolve(f.file); }
@@ -331,7 +348,8 @@ document.addEventListener("click", (e) => {
 
   // Every way of opening a whole folder ends here.
   async function loadFolder({ name, source, handle = null, scan, recentKey = null, lastFilePath = null }) {
-    if (scan.reported) toast(`Found ${scan.files.length.toLocaleString()} files`, 1600);
+    if (scan.skipped.length) reportSkipped(scan);
+    else if (scan.reported) toast(`Found ${scan.files.length.toLocaleString()} files`, 1600);
     for (const f of scan.files) f.fromRoot = true;
     state.root = handle;
     state.rootName = name;
@@ -428,6 +446,7 @@ document.addEventListener("click", (e) => {
     }
     if (!scan.files.length) { toast("No .md / .txt files in drop"); return; }
     addFiles(scan.files, scan.assets);
+    reportSkipped(scan);
   }
 
   async function openDroppedEntries(entries) {
@@ -437,7 +456,7 @@ document.addEventListener("click", (e) => {
     else for (const ent of entries) await scanEntry(ent, ent.name, scan);
     if (!scan.files.length) { toast("No .md / .txt files in drop"); return; }
     if (root) await loadFolder({ name: root.name, source: "upload", scan });
-    else addFiles(scan.files, scan.assets);
+    else { addFiles(scan.files, scan.assets); reportSkipped(scan); }
   }
 
   // ---------------------------------------------------------------
