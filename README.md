@@ -8,13 +8,13 @@ A calm reader for folders of Markdown that runs entirely in your browser. Open a
 
 ## Features
 
-- **Whole folders, not single files.** A compact tree with collapsible folders, a filter by name, and search inside files with match counts.
+- **Whole folders, not single files.** A compact tree with collapsible folders, a filter by name, and search inside files with match counts. Click a `#tag` to find every file that uses it.
 - **Links that work.** Relative links, images, `#heading` anchors and `[[wiki links]]` resolve inside the folder, and the URL follows the file and heading you're on.
-- **GitHub-flavoured Markdown.** Tables, task lists, alerts (`> [!NOTE]`), footnotes, frontmatter and syntax highlighting.
-- **Live reload.** The open file re-renders when it changes on disk, and new or deleted files show up on their own.
-- **Picks up where you left off.** Recent folders and the last file you read are remembered in the browser.
+- **GitHub-flavoured Markdown.** Tables, task lists, alerts (`> [!NOTE]`), footnotes, frontmatter and syntax highlighting, with a Copy button on code blocks.
+- **Live reload.** The open file re-renders when it changes on disk and highlights what changed. New or deleted files show up on their own, and the tree marks files that changed since you last opened them.
+- **Picks up where you left off.** Recent folders and the last file you read are remembered in the browser, and going back to a file returns you to where you were in it.
 - **Private by design.** Fonts and libraries ship with the page, a Content-Security-Policy keeps it local, and remote images stay blocked until you allow them.
-- **Comfortable to read.** An outline of headings, twelve themes, adjustable type and width, a layout for phones, and clean printing.
+- **Comfortable to read.** An outline of headings, twelve themes or one that follows your system's light and dark mode, adjustable type and width, a layout for phones, and clean printing.
 
 ## Use it
 
@@ -38,6 +38,10 @@ Chrome, Edge and Arc read the folder directly, which is what makes live reload a
   <img src="docs/screenshots/paper.png" alt="The Paper theme showing a decision record" width="74%">
   <img src="docs/screenshots/mobile.png" alt="The phone layout" width="21.5%">
 </p>
+
+After a live reload, the edited paragraph and table row are highlighted, and the tree marks a note that changed in the background:
+
+![A live reload in the Slate theme, with the changed paragraph and table row highlighted and a changed note marked in the tree](docs/screenshots/changes.png)
 
 ## How it works
 
