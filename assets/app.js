@@ -1971,6 +1971,13 @@ document.addEventListener("click", (e) => {
     "one-dark": ["#61afef", "#98c379", "#c678dd", "#e5c07b", "#e06c75"],
   };
 
+  // "system" follows the OS appearance: Slate when it's dark, Paper when it's light.
+  const darkScheme = window.matchMedia("(prefers-color-scheme: dark)");
+  function resolveTheme(theme) {
+    if (theme === "system") return darkScheme.matches ? "slate" : "paper";
+    return THEMES[theme] ? theme : defaults.theme;
+  }
+
   // CSS variables rather than an injected <style>, so the page's CSP needs no inline styles.
   function applyReaderTypography() {
     const rs = document.documentElement.style;
@@ -1981,9 +1988,10 @@ document.addEventListener("click", (e) => {
 
   function applyTweaks() {
     const rs = document.documentElement.style;
-    const themeKey = THEMES[tweaks.theme] ? tweaks.theme : defaults.theme;
-    tweaks.theme = themeKey;
+    const themeKey = resolveTheme(tweaks.theme);
+    if (tweaks.theme !== "system") tweaks.theme = themeKey;
     const t = THEMES[themeKey];
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t.paper);
     rs.setProperty("--accent",   t.accent);
     rs.setProperty("--accent-2", t.accent2);
     rs.setProperty("--paper",   t.paper);
@@ -2038,6 +2046,7 @@ document.addEventListener("click", (e) => {
     document.getElementById("tw-width").addEventListener("input", e => set("readingWidth", +e.target.value));
     $$('input[name="tw-face"]').forEach(r => r.addEventListener("change", e => set("bodyFace", e.target.value)));
     document.getElementById("tw-theme").addEventListener("change", e => set("theme", e.target.value));
+    darkScheme.addEventListener("change", () => { if (tweaks.theme === "system") applyTweaks(); });
     document.getElementById("tw-outline").addEventListener("change", e => { set("outline", e.target.checked); refreshOutline(); });
     $$('input[name="tw-remote"]').forEach(r => r.addEventListener("change", e => {
       set("remoteImages", e.target.value);
