@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<!-- Only local scripts, styles and fonts; no network requests. Remote images in documents are held back by the app until allowed. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; font-src 'self' file:; img-src 'self' file: data: blob: https: http:; media-src 'self' file: data: blob: https: http:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'" />
 
 <title>Better MD viewer — Read local markdown files in your browser, on-device</title>
 <meta name="description" content="Better MD viewer is a zero-install, on-device reader for local markdown folders. Renders .md, .markdown, and .txt files entirely in your browser — no uploads, no account, no server. Free." />
@@ -50,9 +52,12 @@
   "featureList": [
     "Open local folders via File System Access API or upload",
     "Drag-and-drop folders or individual .md / .markdown / .txt files",
-    "Sidebar with grouped file tree and filter search",
+    "Collapsible folder tree with name and full-text search",
+    "Live reload when files change on disk",
+    "Links, images and anchors between files in the folder",
+    "GitHub alerts, footnotes and heading anchors",
     "Recent-folder memory via IndexedDB (up to 5)",
-    "Keyboard navigation (\u2318O, arrow keys, j/k)",
+    "Keyboard navigation (⌘O, j/k, /)",
     "Tweakable typography and btop-inspired themes",
     "Rendering via Marked with DOMPurify sanitization"
   ],
@@ -67,6 +72,9 @@
 <div class="app" id="app">
 
   <header class="topbar">
+    <button class="icon-btn" id="sidebarToggle" type="button" title="Toggle sidebar (⌘B)" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="true">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>
+    </button>
     <div class="brand">
       <div class="brand-mark" aria-hidden="true">md</div>
       <span>Better MD viewer</span>
@@ -75,19 +83,19 @@
       <span class="privacy-pill"><span class="dot"></span>ON-DEVICE</span>
       <span class="sep"></span>
       <span id="fileCount">No files loaded</span>
-      <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+      <button class="icon-btn" id="settingsBtn" type="button" title="Settings" aria-label="Settings">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
     </div>
   </header>
 
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="side-actions">
-      <button class="btn" id="openFolderBtn">
+      <button class="btn" id="openFolderBtn" type="button">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5H2.5a1 1 0 0 0-1 1z"/></svg>
         <span>Open folder</span>
       </button>
-      <button class="btn ghost" id="openFilesBtn">
+      <button class="btn ghost" id="openFilesBtn" type="button">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 1.5h5l3 3V14a.5.5 0 0 1-.5.5h-7A.5.5 0 0 1 4 14V2a.5.5 0 0 1 0-.5z M9 1.5V4.5h3"/></svg>
         <span>Select files</span>
       </button>
@@ -96,24 +104,35 @@
     <div class="search-wrap" id="searchWrap">
       <svg class="mag" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>
       <input class="search" id="searchInput" type="text" placeholder="Filter files…" spellcheck="false" aria-label="Filter files"/>
+      <button class="search-mode" id="contentSearchBtn" type="button" aria-pressed="false" title="Also search inside files" aria-label="Also search inside files">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>
+      </button>
     </div>
 
     <nav class="side-sections" id="sideSections" aria-label="File list">
-      <!-- populated by JS -->
+      <div id="recentsSection"></div>
+      <div id="filesSection"></div>
     </nav>
   </aside>
+  <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" title="Drag to resize · double-click to reset" tabindex="0"></div>
 
   <main class="main" id="main">
     <div class="crumbs" id="crumbs">
       <span class="meta">No document selected</span>
     </div>
-    <div class="reader" id="reader">
+    <div class="reader" id="reader" tabindex="0">
       <div class="splash" id="splash">
         <section class="splash-hero" aria-labelledby="hero-title">
           <div class="splash-card">
             <div class="splash-mark" aria-hidden="true"><span>md</span></div>
             <h1 id="hero-title">Read your markdown, locally.</h1>
             <p>A clean reader for local <code>.md</code> files. Nothing uploads. Nothing tracks.</p>
+
+            <button class="splash-resume" id="splashResume" type="button" hidden>
+              <span class="resume-label">Continue reading</span>
+              <span class="resume-name"></span>
+              <span class="resume-file"></span>
+            </button>
 
             <div class="splash-drop" id="splashDrop" role="button" tabindex="0" aria-label="Open folder or drop files">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M3 15v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4"/></svg>
@@ -141,6 +160,7 @@
 
       </div>
     </div>
+    <nav class="outline" id="outline" aria-label="On this page" hidden></nav>
 
     <div class="drop-over" id="dropOver">
       <div class="box">Drop folder or .md files to read</div>
@@ -182,9 +202,19 @@
       <option value="one-dark">One Dark</option>
     </select>
   </div>
+  <div class="row">
+    <label for="tw-outline">Outline of headings</label>
+    <input type="checkbox" id="tw-outline"/>
+  </div>
+  <div class="row">
+    <label for="tw-remote">Remote images</label>
+    <select id="tw-remote">
+      <option value="block">Ask first</option>
+      <option value="load">Always load</option>
+    </select>
+  </div>
   <div class="tweaks-foot">
     <span class="tweaks-hint">Changes apply live</span>
-    <button class="btn ghost tweaks-apply" id="tweaksApply" type="button">Apply</button>
   </div>
 </div>
 
@@ -204,8 +234,8 @@
   </div>
 </div>
 
-<input type="file" id="filePicker" style="display:none" accept=".md,.markdown,.txt" multiple />
-<input type="file" id="dirPicker" style="display:none" webkitdirectory directory multiple />
+<input type="file" id="filePicker" hidden accept=".md,.markdown,.txt" multiple />
+<input type="file" id="dirPicker" hidden webkitdirectory directory multiple />
 
 <script src="assets/marked.min.js" defer></script>
 <script src="assets/purify.min.js" defer></script>

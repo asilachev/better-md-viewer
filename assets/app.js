@@ -23,22 +23,33 @@ document.addEventListener("click", (e) => {
 
   // Marked + DOMPurify
   if (window.marked) {
-    marked.setOptions({ gfm: true, breaks: false, headerIds: true, mangle: false });
+    marked.use({ gfm: true, breaks: false }, markedFootnotes());
   }
   const PURIFY_CFG = {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ["form", "iframe", "object", "embed", "style", "script"],
-    FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur", "formaction", "style"]
+    FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur", "formaction", "style"],
+    // Prefix ids and names with "user-content-" (as GitHub does) so a document can't shadow the app's own elements.
+    SANITIZE_NAMED_PROPS: true,
   };
+  const ID_PREFIX = "user-content-";
+  const APP_NAME = "Better MD viewer";
+  const APP_TITLE = document.title;
 
   const state = {
     files: [],
+    assets: new Map(),   // every non-markdown file by path, for images and links
+    root: null,          // directory handle of the open folder, when the browser gives one (enables live reload)
+    rootName: "",
+    removed: new Set(),  // paths the user removed from the list, so rescans don't bring them back
     activeId: null,
+    activeStamp: 0,      // lastModified of the open file
     activeFolderKey: null,
+    recents: [],
     searchQuery: "",
+    contentSearch: false,
     expanded: {},
     filterCollapsed: {},
-    revealActive: false,
   };
 
   const $  = (s, r = document) => r.querySelector(s);
@@ -47,16 +58,23 @@ document.addEventListener("click", (e) => {
   const el = {
     app: $("#app"),
     sideSections: $("#sideSections"),
+    recentsSection: $("#recentsSection"),
+    filesSection: $("#filesSection"),
     searchWrap: $("#searchWrap"),
     searchInput: $("#searchInput"),
+    contentToggle: $("#contentSearchBtn"),
     crumbs: $("#crumbs"),
     reader: $("#reader"),
+    outline: $("#outline"),
     splash: $("#splash"),
+    splashResume: $("#splashResume"),
     dropOver: $("#dropOver"),
     fileCount: $("#fileCount"),
     openFolderBtn: $("#openFolderBtn"),
     openFilesBtn: $("#openFilesBtn"),
     splashDrop: $("#splashDrop"),
+    sidebarToggle: $("#sidebarToggle"),
+    sidebarResizer: $("#sidebarResizer"),
     settingsBtn: $("#settingsBtn"),
     filePicker: $("#filePicker"),
     dirPicker: $("#dirPicker"),
@@ -134,6 +152,19 @@ document.addEventListener("click", (e) => {
   // File gathering
   // ---------------------------------------------------------------
   const SUPPORTED = /\.(md|markdown|txt)$/i;
+  // Dependency and cache folders: often huge, never the docs you came to read.
+  const IGNORED_DIRS = new Set(["node_modules", "bower_components", "jspm_packages", "__pycache__", "site-packages", "venv"]);
+  // Hidden entries are skipped, except folders that usually hold docs.
+  const HIDDEN_DIRS_KEPT = new Set([".github"]);
+
+  function skipEntry(name, isDir) {
+    if (name.startsWith(".")) return !(isDir && HIDDEN_DIRS_KEPT.has(name));
+    return isDir && IGNORED_DIRS.has(name);
+  }
+  function skipPath(path) {
+    const parts = path.split("/");
+    return parts.some((p, i) => skipEntry(p, i < parts.length - 1));
+  }
 
   function uid() { return "f_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 
@@ -143,28 +174,69 @@ document.addEventListener("click", (e) => {
     return parts.slice(0, -1).join("/");
   }
 
-  async function walkDirHandle(handle, pathPrefix = "") {
-    const out = [];
-    for await (const [name, ent] of handle.entries()) {
-      if (name.startsWith(".")) continue;
-      const rel = pathPrefix ? pathPrefix + "/" + name : name;
-      if (ent.kind === "directory") {
-        out.push(...(await walkDirHandle(ent, rel)));
-      } else if (ent.kind === "file" && SUPPORTED.test(name)) {
-        out.push({
-          id: uid(), path: rel, name,
-          group: deriveGroup(rel), kind: "handle", handle: ent, size: 0,
-        });
-      }
-    }
-    return out;
+  function makeFile(path, kind, src, size = 0) {
+    const f = { id: uid(), path, name: path.slice(path.lastIndexOf("/") + 1), group: deriveGroup(path), kind, size };
+    if (kind === "handle") f.handle = src;
+    else f.file = src;
+    return f;
   }
 
-  async function readFromFileHandle(h) {
-    const f = await h.getFile();
-    return await f.text();
+  // A scan collects the docs plus every other file (images, link targets) and reports progress on big folders.
+  function newScan({ quiet = false } = {}) {
+    let seen = 0;
+    return {
+      files: [], assets: new Map(), started: Date.now(), reported: false,
+      tick() {
+        if (quiet || ++seen % 250 || Date.now() - this.started < 400) return;
+        this.reported = true;
+        toast(`Scanning… ${seen.toLocaleString()} items`, 5000);
+      },
+    };
   }
-  async function readFromFile(f) { return await f.text(); }
+
+  async function scanDirHandle(dir, prefix = "", scan = newScan()) {
+    for await (const [name, ent] of dir.entries()) {
+      const isDir = ent.kind === "directory";
+      if (skipEntry(name, isDir)) continue;
+      const rel = prefix ? prefix + "/" + name : name;
+      if (isDir) await scanDirHandle(ent, rel, scan);
+      else if (SUPPORTED.test(name)) scan.files.push(makeFile(rel, "handle", ent));
+      else scan.assets.set(rel, ent);
+      scan.tick();
+    }
+    return scan;
+  }
+
+  // FileSystemEntry API (Safari/Firefox drops). `rel` is "" for the dropped folder itself.
+  async function scanEntry(ent, rel, scan) {
+    if (ent.isDirectory) {
+      const reader = ent.createReader();
+      for (;;) {
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        if (!batch.length) break;
+        for (const kid of batch) {
+          if (!skipEntry(kid.name, kid.isDirectory)) await scanEntry(kid, rel ? rel + "/" + kid.name : kid.name, scan);
+        }
+      }
+    } else if (SUPPORTED.test(ent.name)) {
+      const file = await new Promise((res, rej) => ent.file(res, rej));
+      scan.files.push(makeFile(rel, "file", file, file.size));
+    } else {
+      scan.assets.set(rel, ent);
+    }
+    scan.tick();
+  }
+
+  function fileObject(f) { return f.kind === "handle" ? f.handle.getFile() : Promise.resolve(f.file); }
+
+  // Assets arrive as handles, Files, or FileSystemFileEntries.
+  async function assetBlob(src, path) {
+    const blob = src instanceof Blob ? src
+      : src.getFile ? await src.getFile()
+      : await new Promise((res, rej) => src.file(res, rej));
+    // An untyped blob won't render as SVG.
+    return !blob.type && /\.svg$/i.test(path) ? new Blob([blob], { type: "image/svg+xml" }) : blob;
+  }
 
   // ---------------------------------------------------------------
   // Toast
@@ -183,17 +255,9 @@ document.addEventListener("click", (e) => {
   async function openFolderViaHandle() {
     try {
       const dir = await window.showDirectoryPicker({ mode: "read" });
-      const files = await walkDirHandle(dir);
-      if (!files.length) { toast("No .md / .txt files found in that folder"); return; }
-      const sourceName = dir.name || "folder";
-      const key = "h::" + sourceName + "::" + Date.now().toString(36);
-      state.activeFolderKey = key;
-      await saveRecent({
-        key, name: sourceName, source: "handle", handle: dir,
-        fileCount: files.length, lastFilePath: null, at: Date.now(),
-      });
-      setFiles(files);
-      if (files[0]) openFile(files[0].id);
+      const scan = await scanDirHandle(dir);
+      if (!scan.files.length) { toast("No .md / .txt files found in that folder"); return; }
+      await loadFolder({ name: dir.name || "folder", source: "handle", handle: dir, scan });
     } catch (e) {
       if (e && e.name !== "AbortError") { console.warn(e); toast("Could not open folder"); }
     }
@@ -234,48 +298,56 @@ document.addEventListener("click", (e) => {
   function openFilesViaInput()  { primeLegacyPicker(() => { el.filePicker.value = ""; el.filePicker.click(); }); }
 
   async function openFolderUpload(fileList) {
-    const incoming = [...fileList].filter(f => SUPPORTED.test(f.name));
-    if (!incoming.length) { toast("No .md / .txt files found"); return; }
-
+    const all = [...fileList];
     let rootName = "";
-    for (const f of incoming) {
-      const rp = f.webkitRelativePath || f.name;
-      const first = rp.split("/")[0];
+    for (const f of all) {
+      const first = (f.webkitRelativePath || f.name).split("/")[0];
       if (!rootName) rootName = first;
       else if (first !== rootName) { rootName = ""; break; }
     }
-    if (!rootName) rootName = "folder";
-
-    const files = incoming.map(f => {
+    const scan = newScan();
+    for (const f of all) {
       const rp = f.webkitRelativePath || f.name;
-      const rel = rp.startsWith(rootName + "/") ? rp.slice(rootName.length + 1) : rp;
-      return {
-        id: uid(), path: rel, name: f.name,
-        group: deriveGroup(rel), kind: "file", file: f, size: f.size,
-      };
-    });
-
-    const key = "u::" + rootName + "::" + Date.now().toString(36);
-    state.activeFolderKey = key;
-    await saveRecent({
-      key, name: rootName, source: "upload",
-      fileCount: files.length, lastFilePath: null, at: Date.now(),
-    });
-    setFiles(files);
-    if (files[0]) openFile(files[0].id);
-    toast(`Read ${files.length} file${files.length === 1 ? "" : "s"} locally · nothing uploaded`, 2800);
+      const rel = rootName && rp.startsWith(rootName + "/") ? rp.slice(rootName.length + 1) : rp;
+      if (skipPath(rel)) continue;
+      if (SUPPORTED.test(f.name)) scan.files.push(makeFile(rel, "file", f, f.size));
+      else scan.assets.set(rel, f);
+    }
+    if (!scan.files.length) { toast("No .md / .txt files found"); return; }
+    await loadFolder({ name: rootName || "folder", source: "upload", scan });
+    toast(`Read ${scan.files.length} file${scan.files.length === 1 ? "" : "s"} locally · nothing uploaded`, 2800);
   }
 
-  async function openLooseFiles(fileList) {
-    const incoming = [...fileList].filter(f => SUPPORTED.test(f.name));
-    if (!incoming.length) { toast("No .md / .txt files found"); return; }
-    const newFiles = incoming.map(f => ({
-      id: uid(), path: f.name, name: f.name, group: "",
-      kind: "file", file: f, size: f.size,
-    }));
-    if (!state.files.length) state.activeFolderKey = null;
-    addFiles(newFiles);
-    if (newFiles[0]) openFile(newFiles[0].id);
+  function openLooseFiles(fileList) {
+    const files = [...fileList].filter(f => SUPPORTED.test(f.name)).map(f => makeFile(f.name, "file", f, f.size));
+    if (!files.length) { toast("No .md / .txt files found"); return; }
+    addFiles(files);
+  }
+
+  // Every way of opening a whole folder ends here.
+  async function loadFolder({ name, source, handle = null, scan, recentKey = null, lastFilePath = null }) {
+    if (scan.reported) toast(`Found ${scan.files.length.toLocaleString()} files`, 1600);
+    for (const f of scan.files) f.fromRoot = true;
+    state.root = handle;
+    state.rootName = name;
+    state.assets = scan.assets;
+    lastScanMs = Date.now() - scan.started;
+    el.splashResume.hidden = true;
+    setFiles(scan.files);
+    state.activeFolderKey = await rememberFolder({ key: recentKey, name, source, handle, fileCount: scan.files.length });
+    const route = parseRoute();
+    const first = pickInitialFile(state.files, route && route.path, lastFilePath);
+    if (first) openFile(first.id, { anchor: route && route.path === first.path ? route.anchor : "", nav: "replace" });
+  }
+
+  // The file in the URL, else where you left off, else the folder's README or index, else the first file.
+  function pickInitialFile(files, ...preferred) {
+    for (const p of preferred) {
+      const f = p && files.find(x => x.path === p);
+      if (f) return f;
+    }
+    const atRoot = re => files.find(f => !f.group && re.test(f.name));
+    return atRoot(/^readme\.(md|markdown)$/i) || atRoot(/^index\.(md|markdown)$/i) || files[0];
   }
 
   // ---------------------------------------------------------------
@@ -311,109 +383,51 @@ document.addEventListener("click", (e) => {
     el.dropOver.classList.remove("on");
     document.body.classList.remove("dragging");
 
-    const items = e.dataTransfer.items ? [...e.dataTransfer.items] : null;
-
-    if (items && items[0] && items[0].getAsFileSystemHandle) {
-      const handles = [];
-      for (const it of items) {
-        if (it.kind !== "file") continue;
-        try {
-          const h = await it.getAsFileSystemHandle();
-          if (h) handles.push(h);
-        } catch (_) {}
+    // Drop data is only readable while this event is being dispatched,
+    // so every item is requested before the first await.
+    const items = [...(e.dataTransfer.items || [])].filter(it => it.kind === "file");
+    const looseFiles = [...(e.dataTransfer.files || [])];
+    try {
+      if (items.length && items[0].getAsFileSystemHandle) {
+        const pending = items.map(it => it.getAsFileSystemHandle().catch(() => null));
+        const handles = (await Promise.all(pending)).filter(Boolean);
+        if (handles.length) return await openDroppedHandles(handles);
+      } else if (items.length && items[0].webkitGetAsEntry) {
+        const entries = items.map(it => it.webkitGetAsEntry()).filter(Boolean);
+        if (entries.length) return await openDroppedEntries(entries);
       }
-      if (handles.length) {
-        const dirs = handles.filter(h => h.kind === "directory");
-        const fhs  = handles.filter(h => h.kind === "file");
-        let allFiles = [];
-        for (const d of dirs) {
-          const f = await walkDirHandle(d, d.name);
-          allFiles.push(...f);
-        }
-        for (const fh of fhs) {
-          if (!SUPPORTED.test(fh.name)) continue;
-          allFiles.push({
-            id: uid(), path: fh.name, name: fh.name, group: "",
-            kind: "handle", handle: fh, size: 0
-          });
-        }
-        if (!allFiles.length) { toast("No .md / .txt files in drop"); return; }
-        if (dirs.length === 1 && !fhs.length) {
-          const root = dirs[0];
-          allFiles = allFiles.map(f => {
-            const rel = f.path.startsWith(root.name + "/") ? f.path.slice(root.name.length + 1) : f.path;
-            return { ...f, path: rel, group: deriveGroup(rel) };
-          });
-          const key = "h::" + root.name + "::" + Date.now().toString(36);
-          state.activeFolderKey = key;
-          await saveRecent({
-            key, name: root.name, source: "handle",
-            handle: root, fileCount: allFiles.length, lastFilePath: null, at: Date.now(),
-          });
-          setFiles(allFiles);
-        } else {
-          if (!state.files.length) state.activeFolderKey = null;
-          addFiles(allFiles);
-        }
-        if (allFiles[0]) openFile(allFiles[0].id);
-        return;
-      }
+      if (looseFiles.length) openLooseFiles(looseFiles);
+    } catch (err) {
+      console.warn(err);
+      toast("Could not open what you dropped");
     }
+  }
 
-    if (items && items[0] && items[0].webkitGetAsEntry) {
-      const entries = items.map(i => i.webkitGetAsEntry()).filter(Boolean);
-      const collected = [];
-      let rootName = "";
-      const singleDir = entries.length === 1 && entries[0].isDirectory;
-      if (singleDir) rootName = entries[0].name;
-
-      async function walk(ent, prefix) {
-        if (ent.isFile) {
-          if (!SUPPORTED.test(ent.name)) return;
-          const file = await new Promise((r, rej) => ent.file(r, rej));
-          const p = prefix ? prefix + "/" + ent.name : ent.name;
-          collected.push({
-            id: uid(), path: p, name: ent.name,
-            group: deriveGroup(p), kind: "file", file, size: file.size
-          });
-        } else if (ent.isDirectory) {
-          const reader = ent.createReader();
-          const readAll = () => new Promise((res) => {
-            const out = [];
-            const step = () => reader.readEntries((chunk) => {
-              if (!chunk.length) return res(out);
-              out.push(...chunk); step();
-            });
-            step();
-          });
-          const kids = await readAll();
-          for (const k of kids) {
-            const newPrefix = prefix ? prefix + "/" + ent.name : (singleDir ? "" : ent.name);
-            await walk(k, newPrefix);
-          }
-        }
-      }
-      for (const ent of entries) await walk(ent, "");
-
-      if (!collected.length) { toast("No .md / .txt files in drop"); return; }
-      if (singleDir) {
-        const key = "u::" + rootName + "::" + Date.now().toString(36);
-        state.activeFolderKey = key;
-        await saveRecent({
-          key, name: rootName, source: "upload",
-          fileCount: collected.length, lastFilePath: null, at: Date.now(),
-        });
-        setFiles(collected);
-      } else {
-        if (!state.files.length) state.activeFolderKey = null;
-        addFiles(collected);
-      }
-      if (collected[0]) openFile(collected[0].id);
+  async function openDroppedHandles(handles) {
+    const dirs = handles.filter(h => h.kind === "directory");
+    if (dirs.length === 1 && handles.length === 1) {
+      const scan = await scanDirHandle(dirs[0]);
+      if (!scan.files.length) { toast("No .md / .txt files in drop"); return; }
+      await loadFolder({ name: dirs[0].name, source: "handle", handle: dirs[0], scan });
       return;
     }
+    const scan = newScan();
+    for (const d of dirs) await scanDirHandle(d, d.name, scan);
+    for (const h of handles) {
+      if (h.kind === "file" && SUPPORTED.test(h.name)) scan.files.push(makeFile(h.name, "handle", h));
+    }
+    if (!scan.files.length) { toast("No .md / .txt files in drop"); return; }
+    addFiles(scan.files, scan.assets);
+  }
 
-    const files = [...(e.dataTransfer.files || [])];
-    if (files.length) await openLooseFiles(files);
+  async function openDroppedEntries(entries) {
+    const root = entries.length === 1 && entries[0].isDirectory ? entries[0] : null;
+    const scan = newScan();
+    if (root) await scanEntry(root, "", scan);
+    else for (const ent of entries) await scanEntry(ent, ent.name, scan);
+    if (!scan.files.length) { toast("No .md / .txt files in drop"); return; }
+    if (root) await loadFolder({ name: root.name, source: "upload", scan });
+    else addFiles(scan.files, scan.assets);
   }
 
   // ---------------------------------------------------------------
@@ -422,25 +436,34 @@ document.addEventListener("click", (e) => {
   function setFiles(arr) {
     state.files = sortFiles(arr);
     state.activeId = null;
+    state.removed = new Set();
     state.expanded = {};
     state.filterCollapsed = {};
     state.searchQuery = "";
     el.searchInput.value = "";
-    renderSidebar();
+    contentCache.clear();
+    renderFiles();
     renderTopMeta();
   }
-  function addFiles(arr) {
+  function addFiles(arr, assets) {
+    if (!state.files.length) {
+      state.activeFolderKey = null;
+      state.root = null;
+      state.assets = new Map();
+    }
     const existing = new Set(state.files.map(f => f.path));
-    const merged = state.files.slice();
+    const added = [];
     for (const f of arr) {
       let p = f.path, i = 1;
       while (existing.has(p)) { p = f.path.replace(/(\.[^.]+)?$/, "-" + (++i) + "$1"); }
       existing.add(p);
-      merged.push({ ...f, path: p, group: deriveGroup(p) });
+      added.push({ ...f, path: p, group: deriveGroup(p) });
     }
-    state.files = sortFiles(merged);
-    renderSidebar();
+    if (assets) for (const [p, src] of assets) if (!state.assets.has(p)) state.assets.set(p, src);
+    state.files = sortFiles([...state.files, ...added]);
+    renderFiles();
     renderTopMeta();
+    if (added[0]) openFile(added[0].id);
   }
   const collator = new Intl.Collator(undefined, { numeric: true });
   function sortFiles(arr) {
@@ -459,24 +482,31 @@ document.addEventListener("click", (e) => {
   function removeFile(id) {
     const idx = state.files.findIndex(f => f.id === id);
     if (idx < 0) return;
-    const wasActive = state.activeId === id;
-    state.files.splice(idx, 1);
-    if (wasActive) {
+    const [f] = state.files.splice(idx, 1);
+    if (f.fromRoot) state.removed.add(f.path);
+    contentCache.delete(id);
+    renderFiles();
+    renderTopMeta();
+    if (state.activeId === id) {
       state.activeId = null;
       const next = state.files[idx] || state.files[idx - 1];
       if (next) openFile(next.id);
       else showSplash();
     }
-    renderSidebar();
-    renderTopMeta();
   }
   function clearFiles() {
     state.files = [];
+    state.assets = new Map();
+    state.root = null;
     state.activeId = null;
     state.activeFolderKey = null;
-    renderSidebar();
+    contentCache.clear();
+    renderFiles();
     renderTopMeta();
     showSplash();
+  }
+  function activeFile() {
+    return state.files.find(f => f.id === state.activeId) || null;
   }
 
   // ---------------------------------------------------------------
@@ -495,7 +525,7 @@ document.addEventListener("click", (e) => {
   }
   function setAllCollapsed(collapsed) {
     for (const p of folderPaths(state.files)) setCollapsed(p, collapsed);
-    renderSidebar();
+    renderFiles();
   }
   function folderPaths(files) {
     const out = new Set();
@@ -504,20 +534,30 @@ document.addEventListener("click", (e) => {
     }
     return out;
   }
-  // Expand the folders above f and scroll its row into view on next render.
   function revealFile(f) {
     for (let p = f.group; p; p = deriveGroup(p)) {
       state.expanded[p] = true;
       state.filterCollapsed[p] = false;
     }
-    state.revealActive = true;
   }
 
-  function filteredFiles() {
+  // Files matching the filter. With content search on, files whose text contains it match too,
+  // and `hits` says how often.
+  function searchResults() {
     const q = state.searchQuery.trim().toLowerCase();
-    return q
-      ? state.files.filter(f => f.path.toLowerCase().includes(q) || f.name.toLowerCase().includes(q))
-      : state.files;
+    const hits = new Map();
+    if (!q) return { files: state.files, hits };
+    const files = state.files.filter(f => {
+      const n = state.contentSearch ? countHits(contentCache.get(f.id)?.lower, q) : 0;
+      if (n) hits.set(f.id, n);
+      return n > 0 || f.path.toLowerCase().includes(q) || f.name.toLowerCase().includes(q);
+    });
+    return { files, hits };
+  }
+  function countHits(text, q) {
+    let n = 0;
+    if (text) for (let i = text.indexOf(q); i >= 0 && n < 999; i = text.indexOf(q, i + q.length)) n++;
+    return n;
   }
 
   function buildTree(files) {
@@ -558,7 +598,7 @@ document.addEventListener("click", (e) => {
         const { dir } = compactDir(child);
         if (!isCollapsed(dir.path)) walk(dir);
       }
-    })(buildTree(filteredFiles()));
+    })(buildTree(searchResults().files));
     return out;
   }
 
@@ -568,101 +608,55 @@ document.addEventListener("click", (e) => {
   const ICON_CHEVRON = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>`;
   const ICON_COLLAPSE_ALL = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 2.5 3 3 3-3"/><path d="m5 13.5 3-3 3 3"/></svg>`;
   const ICON_EXPAND_ALL = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 5.5 3-3 3 3"/><path d="m5 10.5 3 3 3-3"/></svg>`;
+  const ICON_RESCAN = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89"/><path d="M13.5 2.5v3h-3"/></svg>`;
 
-  let sidebarRenderGen = 0;
-  async function renderSidebar() {
-    const gen = ++sidebarRenderGen;
-    const recents = await loadRecentsSorted();
-    if (gen !== sidebarRenderGen) return;
-    const root = el.sideSections;
-    root.innerHTML = "";
+  function renderRecents() {
+    const root = el.recentsSection;
+    root.replaceChildren();
+    if (!state.recents.length) return;
 
-    if (recents.length) {
-      const title = document.createElement("div");
-      title.className = "side-title";
-      title.innerHTML = `<span>Recent</span><button id="clearRecentsBtn">Forget all</button>`;
-      root.appendChild(title);
+    const title = document.createElement("div");
+    title.className = "side-title";
+    title.innerHTML = `<span>Recent</span><button id="clearRecentsBtn" type="button">Forget all</button>`;
+    root.appendChild(title);
 
-      const wrap = document.createElement("div");
-      wrap.className = "recents";
-      for (const r of recents) {
-        const row = document.createElement("div");
-        row.className = "recent" + (r.source === "handle" ? "" : " no-handle");
-        const icon = r.source === "handle" ? "fs" : "up";
-        row.innerHTML = `
-          <div class="ricon">${icon}</div>
-          <div class="rtitle"></div>
-          <div class="rmeta"></div>
-          <button class="rforget" title="Forget">×</button>
-        `;
-        row.querySelector(".rtitle").textContent = r.name;
-        row.querySelector(".rmeta").textContent = `${timeAgo(r.at)} · ${r.fileCount} file${r.fileCount === 1 ? "" : "s"}`;
-        row.addEventListener("click", (e) => {
-          if (e.target.closest(".rforget")) return;
-          reopenRecent(r);
-        });
-        row.querySelector(".rforget").addEventListener("click", async (e) => {
-          e.stopPropagation();
-          await idbDel(r.key);
-          renderSidebar();
-        });
-        wrap.appendChild(row);
-      }
-      root.appendChild(wrap);
-
-      $("#clearRecentsBtn").addEventListener("click", async () => {
-        await idbClear();
-        renderSidebar();
-        toast("Recents cleared");
-      });
-    }
-
-    if (state.files.length) {
-      const hasFolders = state.files.some(f => f.group);
-      const title = document.createElement("div");
-      title.className = "side-title files-title";
-      title.style.marginTop = "12px";
-      title.innerHTML = `
-        <span>${state.files.length} file${state.files.length === 1 ? "" : "s"}</span>
-        <span class="side-tools">
-          ${hasFolders ? `
-            <button class="tool" id="collapseAllBtn" title="Collapse all folders" aria-label="Collapse all folders">${ICON_COLLAPSE_ALL}</button>
-            <button class="tool" id="expandAllBtn" title="Expand all folders" aria-label="Expand all folders">${ICON_EXPAND_ALL}</button>
-          ` : ""}
-          <button id="clearFilesBtn">Clear</button>
-        </span>
+    const wrap = document.createElement("div");
+    wrap.className = "recents";
+    for (const r of state.recents) {
+      const row = document.createElement("div");
+      row.className = "recent" + (r.source === "handle" ? "" : " no-handle");
+      row.innerHTML = `
+        <button class="recent-open" type="button">
+          <span class="ricon">${r.source === "handle" ? "fs" : "up"}</span>
+          <span class="rtitle"></span>
+          <span class="rmeta"></span>
+        </button>
+        <button class="rforget" type="button" title="Forget" aria-label="Forget">×</button>
       `;
-      root.appendChild(title);
+      $(".rtitle", row).textContent = r.name;
+      $(".rmeta", row).textContent = `${timeAgo(r.at)} · ${r.fileCount} file${r.fileCount === 1 ? "" : "s"}`;
+      $(".recent-open", row).addEventListener("click", () => reopenRecent(r));
+      $(".rforget", row).addEventListener("click", async () => {
+        try { await idbDel(r.key); } catch (_) {}
+        loadRecents();
+      });
+      wrap.appendChild(row);
+    }
+    root.appendChild(wrap);
 
-      if (state.files.length > 10) el.searchWrap.classList.add("on");
-      else el.searchWrap.classList.remove("on");
+    $("#clearRecentsBtn", root).addEventListener("click", async () => {
+      try { await idbClear(); } catch (_) {}
+      loadRecents();
+      toast("Recents cleared");
+    });
+  }
 
-      const visible = filteredFiles();
-      const tree = document.createElement("div");
-      tree.className = "tree";
-      renderTreeLevel(buildTree(visible), 0, tree);
-      root.appendChild(tree);
+  function renderFiles() {
+    const root = el.filesSection;
+    root.replaceChildren();
+    el.searchWrap.classList.toggle("on", state.files.length > 0);
 
-      const clearBtn = $("#clearFilesBtn");
-      if (clearBtn) clearBtn.addEventListener("click", clearFiles);
-      const collapseBtn = $("#collapseAllBtn");
-      if (collapseBtn) collapseBtn.addEventListener("click", () => setAllCollapsed(true));
-      const expandBtn = $("#expandAllBtn");
-      if (expandBtn) expandBtn.addEventListener("click", () => setAllCollapsed(false));
-
-      if (!visible.length) {
-        const em = document.createElement("div");
-        em.className = "empty-side";
-        em.textContent = `No files match "${state.searchQuery}".`;
-        root.appendChild(em);
-      }
-
-      if (state.revealActive) {
-        state.revealActive = false;
-        $(".file-row.active", tree)?.scrollIntoView({ block: "nearest" });
-      }
-    } else {
-      el.searchWrap.classList.remove("on");
+    if (!state.files.length) {
       const em = document.createElement("div");
       em.className = "empty-side";
       em.innerHTML = `
@@ -670,11 +664,50 @@ document.addEventListener("click", (e) => {
         Click <b>Open folder</b>, or drop a folder / <span class="kbd">.md</span> files anywhere.
       `;
       root.appendChild(em);
+      return;
+    }
+
+    const n = state.files.length;
+    const hasFolders = state.files.some(f => f.group);
+    const title = document.createElement("div");
+    title.className = "side-title files-title";
+    title.style.marginTop = "12px";
+    title.innerHTML = `
+      <span>${n} file${n === 1 ? "" : "s"}</span>
+      <span class="side-tools">
+        ${state.root ? `<button class="tool" id="rescanBtn" type="button" title="Rescan folder" aria-label="Rescan folder">${ICON_RESCAN}</button>` : ""}
+        ${hasFolders ? `
+          <button class="tool" id="collapseAllBtn" type="button" title="Collapse all folders" aria-label="Collapse all folders">${ICON_COLLAPSE_ALL}</button>
+          <button class="tool" id="expandAllBtn" type="button" title="Expand all folders" aria-label="Expand all folders">${ICON_EXPAND_ALL}</button>
+        ` : ""}
+        <button id="clearFilesBtn" type="button">Clear</button>
+      </span>
+    `;
+    root.appendChild(title);
+    $("#clearFilesBtn", title).addEventListener("click", clearFiles);
+    $("#rescanBtn", title)?.addEventListener("click", () => rescanFolder({ manual: true }));
+    $("#collapseAllBtn", title)?.addEventListener("click", () => setAllCollapsed(true));
+    $("#expandAllBtn", title)?.addEventListener("click", () => setAllCollapsed(false));
+
+    const { files: visible, hits } = searchResults();
+    const tree = document.createElement("div");
+    tree.className = "tree";
+    tree.id = "fileTree";
+    renderTreeLevel(buildTree(visible), 0, tree, hits);
+    root.appendChild(tree);
+
+    if (!visible.length) {
+      const em = document.createElement("div");
+      em.className = "empty-side";
+      em.textContent = state.contentSearch
+        ? `Nothing matches "${state.searchQuery}" in names or contents.`
+        : `No files match "${state.searchQuery}".`;
+      root.appendChild(em);
     }
   }
 
-  function renderTreeLevel(node, depth, parent) {
-    for (const f of node.files) parent.appendChild(renderFileRow(f, depth));
+  function renderTreeLevel(node, depth, parent, hits) {
+    for (const f of node.files) parent.appendChild(renderFileRow(f, depth, hits));
     for (const child of node.dirs.values()) {
       const { dir, label } = compactDir(child);
       const collapsed = isCollapsed(dir.path);
@@ -692,7 +725,7 @@ document.addEventListener("click", (e) => {
         <span class="name"></span>
         <span class="count">${dir.count}</span>
       `;
-      head.querySelector(".name").textContent = label;
+      $(".name", head).textContent = label;
       // Toggle in place — no re-render, so scroll position and focus stay put.
       head.addEventListener("click", () => {
         const nowCollapsed = wrap.classList.toggle("collapsed");
@@ -702,32 +735,49 @@ document.addEventListener("click", (e) => {
 
       const kids = document.createElement("div");
       kids.className = "tree-children";
-      renderTreeLevel(dir, depth + 1, kids);
+      renderTreeLevel(dir, depth + 1, kids, hits);
       wrap.append(head, kids);
       parent.appendChild(wrap);
     }
   }
 
-  function renderFileRow(f, depth) {
-    const fe = document.createElement("div");
-    fe.className = "tree-row file-row" + (f.id === state.activeId ? " active" : "");
-    fe.style.setProperty("--depth", depth);
-    fe.innerHTML = `
-      <span class="twist"><span class="dot-mark"></span></span>
-      <span class="name"></span>
-      <button class="remove" title="Remove from list">×</button>
+  function renderFileRow(f, depth, hits) {
+    const row = document.createElement("div");
+    row.className = "tree-row file-row" + (f.id === state.activeId ? " active" : "");
+    row.dataset.id = f.id;
+    row.style.setProperty("--depth", depth);
+    row.title = f.path;
+    const n = hits && hits.get(f.id);
+    row.innerHTML = `
+      <button class="row-main" type="button"><span class="twist"><span class="dot-mark"></span></span><span class="name"></span></button>
+      ${n ? `<span class="count hits" title="${n} match${n === 1 ? "" : "es"}">${n > 99 ? "99+" : n}</span>` : ""}
+      <button class="remove" type="button" title="Remove from list" aria-label="Remove from list">×</button>
     `;
-    fe.querySelector(".name").textContent = f.name;
-    fe.title = f.path;
-    fe.addEventListener("click", (e) => {
+    $(".name", row).textContent = f.name;
+    row.addEventListener("click", (e) => {
       if (e.target.closest(".remove")) return;
       openFile(f.id);
     });
-    fe.querySelector(".remove").addEventListener("click", (e) => {
+    $(".remove", row).addEventListener("click", (e) => {
       e.stopPropagation();
       removeFile(f.id);
     });
-    return fe;
+    return row;
+  }
+
+  // Move the highlight to the open file without rebuilding the tree, opening its folders.
+  function syncActiveRow() {
+    const tree = $("#fileTree");
+    if (!tree) return;
+    $$(".file-row.active", tree).forEach(r => r.classList.remove("active"));
+    const row = $(`.file-row[data-id="${state.activeId}"]`, tree);
+    if (!row) return;
+    for (let dir = row.closest(".tree-dir"); dir; dir = dir.parentElement.closest(".tree-dir")) {
+      dir.classList.remove("collapsed");
+      dir.firstElementChild.setAttribute("aria-expanded", "true");
+    }
+    row.classList.add("active");
+    row.scrollIntoView({ block: "nearest" });
   }
 
   function renderTopMeta() {
@@ -738,67 +788,161 @@ document.addEventListener("click", (e) => {
   // ---------------------------------------------------------------
   // Rendering: reader
   // ---------------------------------------------------------------
-  async function openFile(id) {
+  let openGen = 0;
+  let renderGen = 0;
+  let blobUrls = [];
+
+  async function openFile(id, { anchor = "", nav = "push" } = {}) {
     const f = state.files.find(x => x.id === id);
     if (!f) return;
+    const gen = ++openGen;
     state.activeId = id;
     revealFile(f);
-    renderSidebar();
+    syncActiveRow();
     renderCrumbs(f);
+    document.title = `${f.name} — ${APP_NAME}`;
+    setRoute(f.path, anchor, nav);
+    closeDrawer();
 
-    let text = "";
+    let text = "", stamp = 0;
     try {
-      if (f.kind === "handle") text = await readFromFileHandle(f.handle);
-      else if (f.kind === "file") text = await readFromFile(f.file);
+      const file = await fileObject(f);
+      stamp = file.lastModified;
+      text = await file.text();
     } catch (e) {
       text = "# Could not read this file\n\n`" + (e && e.message || e) + "`";
     }
+    if (gen !== openGen) return;   // another file was opened while this one was loading
+    state.activeStamp = stamp;
+    renderDocument(f, text);
 
-    const isMd = /\.(md|markdown)$/i.test(f.name);
-    let html;
-    if (isMd) {
+    const hit = $("mark.hit", el.reader);
+    if (anchor) scrollToAnchor(anchor);
+    else if (hit) hit.scrollIntoView({ block: "center" });
+    else el.reader.scrollTop = 0;
+    const focused = document.activeElement;
+    if (!focused || !focused.closest("input, textarea, select")) el.reader.focus({ preventScroll: true });
+    rememberLastFile(f);
+  }
+
+  function renderDocument(f, text) {
+    const gen = ++renderGen;
+    const article = document.createElement("article");
+    article.className = "reader-inner md";
+    article.id = "readerInner";
+    let held = 0;
+    if (/\.(md|markdown)$/i.test(f.name)) {
       const { frontmatter, body } = splitFrontmatter(text);
-      const raw = renderFrontmatterTable(frontmatter) + marked.parse(body);
-      html = DOMPurify.sanitize(raw, PURIFY_CFG);
+      // The fragment belongs to DOMPurify's inert document: nothing in it loads until it is inserted below.
+      const frag = DOMPurify.sanitize(renderFrontmatterTable(frontmatter) + marked.parse(body), { ...PURIFY_CFG, RETURN_DOM_FRAGMENT: true });
+      if (tweaks.remoteImages !== "load") held = holdRemoteMedia(frag);
+      holdLocalMedia(frag);
+      article.append(frag);
     } else {
       const pre = document.createElement("pre");
       pre.className = "plain";
       pre.textContent = text;
-      html = pre.outerHTML;
+      article.append(pre);
     }
+    revokeBlobUrls();
+    el.reader.replaceChildren(article);
+    enhanceCallouts(article);
+    enhanceInlineTokens(article);
+    enhanceHeadingAnchors(article);
+    highlightCodeBlocks(article);
+    wireLinks(article, f);
+    loadLocalMedia(article, f, gen);
+    if (held) showRemoteNotice(article, held);
+    renderOutline(article, f);
+    highlightHits(article);
+  }
 
-    el.reader.innerHTML = `<article class="reader-inner md" id="readerInner">${html}</article>`;
-    enhanceCallouts($("#readerInner"));
-    enhanceInlineTokens($("#readerInner"));
-    enhanceHeadingAnchors($("#readerInner"));
-    highlightCodeBlocks($("#readerInner"));
-    $$("#readerInner a").forEach(a => {
-      const href = a.getAttribute("href") || "";
-      if (/^(https?:)?\/\//i.test(href)) {
-        a.setAttribute("target", "_blank");
-        a.setAttribute("rel", "noopener noreferrer");
+  // Remote images (and other media) tell their host who opened the document, so they wait for consent.
+  const REMOTE_ATTRS = ["src", "srcset", "poster", "background"];
+  const REMOTE_URL = /(^|[\s,])(https?:)?\/\//i;
+  function holdRemoteMedia(root) {
+    let held = 0;
+    root.querySelectorAll("[src], [srcset], [poster], [background]").forEach(node => {
+      let hit = false;
+      for (const attr of REMOTE_ATTRS) {
+        const value = node.getAttribute(attr);
+        if (!value || !REMOTE_URL.test(value.trim())) continue;
+        node.setAttribute("data-remote-" + attr, value);
+        node.removeAttribute(attr);
+        hit = true;
       }
+      if (hit) { node.classList.add("remote-held"); held++; }
     });
-    $$("#readerInner .wiki-link").forEach(a => {
-      a.addEventListener("click", e => {
-        const target = a.dataset.wikiTarget || "";
-        const match = findWikiFile(target);
-        if (!match) return;
-        e.preventDefault();
-        openFile(match.id);
-      });
+    return held;
+  }
+  function releaseRemoteMedia(root) {
+    $$(".remote-held", root).forEach(node => {
+      for (const attr of REMOTE_ATTRS) {
+        const value = node.getAttribute("data-remote-" + attr);
+        if (value === null) continue;
+        node.setAttribute(attr, value);
+        node.removeAttribute("data-remote-" + attr);
+      }
+      node.classList.remove("remote-held");
     });
-    el.reader.scrollTop = 0;
-    applyReaderTypography();
+  }
+  function showRemoteNotice(article, count) {
+    const bar = document.createElement("div");
+    bar.className = "remote-notice";
+    bar.setAttribute("role", "note");
+    bar.innerHTML = `
+      <span>${count} remote image${count === 1 ? "" : "s"} blocked. Loading ${count === 1 ? "it" : "them"} tells the host you opened this file.</span>
+      <button type="button" data-remote="once">Load</button>
+      <button type="button" data-remote="always">Always load</button>
+    `;
+    bar.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-remote]");
+      if (!btn) return;
+      if (btn.dataset.remote === "always") {
+        tweaks.remoteImages = "load";
+        persistTweaks();
+        syncTweakControls();
+      }
+      releaseRemoteMedia(article);
+      bar.remove();
+    });
+    article.prepend(bar);
+  }
 
-    if (state.activeFolderKey) {
-      const rec = await idbGet(state.activeFolderKey);
-      if (rec) {
-        rec.lastFilePath = f.path;
-        rec.at = Date.now();
-        await idbPut(rec);
+  // Relative image paths point into the opened folder, not next to index.html.
+  const HAS_SCHEME = /^([a-z][a-z\d+.-]*:|\/\/)/i;
+  function holdLocalMedia(root) {
+    root.querySelectorAll("[src]").forEach(node => {
+      const src = node.getAttribute("src");
+      if (!src || HAS_SCHEME.test(src)) return;
+      node.setAttribute("data-local-src", src);
+      node.removeAttribute("src");
+      node.removeAttribute("srcset");
+    });
+  }
+  function loadLocalMedia(root, f, gen) {
+    return Promise.all($$("[data-local-src]", root).map(async node => {
+      const path = resolvePath(f.path, node.getAttribute("data-local-src")).path;
+      const src = findAsset(path);
+      if (!src) { markMissing(node, path); return; }
+      try {
+        const blob = await assetBlob(src, path);
+        if (gen !== renderGen) return;
+        const url = URL.createObjectURL(blob);
+        blobUrls.push(url);
+        node.setAttribute("src", url);
+      } catch (_) {
+        markMissing(node, path);
       }
-    }
+    }));
+  }
+  function markMissing(node, path) {
+    node.classList.add("missing-asset");
+    node.title = `Not found in this folder: ${path}`;
+  }
+  function revokeBlobUrls() {
+    blobUrls.forEach(u => URL.revokeObjectURL(u));
+    blobUrls = [];
   }
 
   function renderCrumbs(f) {
@@ -828,9 +972,279 @@ document.addEventListener("click", (e) => {
   }
 
   function showSplash() {
-    el.reader.innerHTML = "";
-    el.reader.appendChild(el.splash);
+    el.reader.replaceChildren(el.splash);
     el.crumbs.innerHTML = `<span class="meta">No document selected</span>`;
+    document.title = APP_TITLE;
+    renderOutline(null);
+    if (location.hash.startsWith("#/")) history.replaceState(null, "", location.pathname + location.search);
+  }
+
+  // ---------------------------------------------------------------
+  // Links inside documents
+  // ---------------------------------------------------------------
+  // Resolve a link against the folder of `fromPath`; "/x" starts at the opened folder's root.
+  function resolvePath(fromPath, ref) {
+    const hashAt = ref.indexOf("#");
+    const fragment = hashAt < 0 ? "" : safeDecode(ref.slice(hashAt + 1));
+    const raw = (hashAt < 0 ? ref : ref.slice(0, hashAt)).split("?")[0];
+    const out = raw.startsWith("/") ? [] : fromPath.split("/").slice(0, -1);
+    for (const seg of raw.split("/").map(safeDecode)) {
+      if (!seg || seg === ".") continue;
+      if (seg === "..") out.pop();
+      else out.push(seg);
+    }
+    return { path: out.join("/"), fragment, rooted: raw.startsWith("/") };
+  }
+  function safeDecode(s) {
+    try { return decodeURIComponent(s); } catch (_) { return s; }
+  }
+  function fileByPath(path) {
+    const lower = path.toLowerCase();
+    return state.files.find(f => f.path === path) || state.files.find(f => f.path.toLowerCase() === lower) || null;
+  }
+  function findAsset(path) {
+    if (state.assets.has(path)) return state.assets.get(path);
+    const lower = path.toLowerCase();
+    for (const [p, src] of state.assets) if (p.toLowerCase() === lower) return src;
+    return null;
+  }
+
+  // The loaded file a link points at, trying the spellings docs sites use:
+  // "x", "x.html", "x/" (its README or index), and "/x" from a site root nested in the folder.
+  function findLinkedFile(fromPath, target) {
+    const bases = [target.path];
+    if (target.rooted) {
+      const dirs = fromPath.split("/").slice(0, -1);
+      for (let i = 1; i <= dirs.length; i++) bases.push(dirs.slice(0, i).join("/") + "/" + target.path);
+      const rootPrefix = state.rootName + "/";
+      if (state.rootName && target.path.startsWith(rootPrefix)) bases.push(target.path.slice(rootPrefix.length));
+    }
+    for (const base of bases) {
+      const b = base.replace(/\/+$/, "");
+      const tries = b
+        ? [b, b.replace(/\.html?$/i, ".md"), b + ".md", b + ".markdown", b + "/README.md", b + "/index.md"]
+        : ["README.md", "index.md"];
+      for (const p of tries) {
+        const f = fileByPath(p);
+        if (f) return f;
+      }
+    }
+    return null;
+  }
+
+  // Point every link at something that works here: docs open in the app (their href is the
+  // app's own URL, so new-tab clicks work too), other files open from the folder.
+  function wireLinks(root, f) {
+    $$("a[href]", root).forEach(a => {
+      if (a.classList.contains("wiki-link")) { wireWikiLink(a); return; }
+      const href = a.getAttribute("href");
+      if (HAS_SCHEME.test(href)) {
+        if (/^(https?:)?\/\//i.test(href)) {
+          a.setAttribute("target", "_blank");
+          a.setAttribute("rel", "noopener noreferrer");
+        }
+        return;
+      }
+      if (href.startsWith("#")) { pointAt(a, f, safeDecode(href.slice(1))); return; }
+      const target = resolvePath(f.path, href);
+      const doc = findLinkedFile(f.path, target);
+      if (doc) pointAt(a, doc, target.fragment);
+      else if (findAsset(target.path)) a.dataset.asset = target.path;
+      else markBroken(a, target.path, `Not found in this folder: ${target.path}`);
+    });
+  }
+  function pointAt(a, doc, anchor) {
+    a.dataset.path = doc.path;
+    a.dataset.anchor = anchor || "";
+    a.setAttribute("href", routeHash(doc.path, anchor));
+  }
+  function markBroken(a, path, message) {
+    a.classList.add("broken-link");
+    a.dataset.missing = path;
+    a.title = message;
+  }
+  function wireWikiLink(a) {
+    const [name, heading = ""] = (a.dataset.wikiTarget || "").split("#");
+    const doc = findWikiFile(name);
+    if (doc) pointAt(a, doc, heading.trim() ? githubSlug(heading) : "");
+    else markBroken(a, name, `No file named "${name.trim()}" in this folder`);
+  }
+
+  function followDocLink(path, anchor) {
+    const doc = fileByPath(path);
+    if (!doc) return;
+    if (doc.id === state.activeId) goToAnchor(anchor);
+    else openFile(doc.id, { anchor });
+  }
+  async function openAsset(path) {
+    const src = findAsset(path);
+    if (!src) return;
+    try {
+      const url = URL.createObjectURL(await assetBlob(src, path));
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (_) {
+      toast(`Could not open ${path}`);
+    }
+  }
+
+  function goToAnchor(anchor, nav = "push") {
+    const f = activeFile();
+    if (f) setRoute(f.path, anchor, nav);
+    scrollToAnchor(anchor);
+  }
+  function scrollToAnchor(anchor) {
+    const target = findAnchor(anchor);
+    if (target) target.scrollIntoView({ block: "start" });
+    else if (!anchor) el.reader.scrollTop = 0;
+  }
+  function findAnchor(anchor) {
+    const article = $("#readerInner");
+    if (!article || !anchor) return null;
+    for (const id of [ID_PREFIX + anchor, anchor]) {
+      const q = CSS.escape(id);
+      const node = article.querySelector(`[id="${q}"], [name="${q}"]`);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------
+  // Outline
+  // ---------------------------------------------------------------
+  let outlineTargets = [];
+  function renderOutline(article, f) {
+    const heads = article ? $$("h1, h2, h3", article).filter(h => h.id) : [];
+    const show = !!tweaks.outline && heads.length >= 3;
+    outlineTargets = show ? heads : [];
+    el.outline.hidden = !show;
+    el.outline.replaceChildren();
+    if (!show) return;
+    const title = document.createElement("div");
+    title.className = "outline-title";
+    title.textContent = "On this page";
+    el.outline.append(title);
+    const top = Math.min(...heads.map(h => +h.tagName[1]));
+    for (const h of heads) {
+      const anchor = h.id.startsWith(ID_PREFIX) ? h.id.slice(ID_PREFIX.length) : h.id;
+      const a = document.createElement("a");
+      a.href = routeHash(f.path, anchor);
+      a.dataset.anchor = anchor;
+      a.className = `lvl-${+h.tagName[1] - top}`;
+      a.textContent = headingText(h);
+      el.outline.append(a);
+    }
+    syncOutline();
+  }
+  function syncOutline() {
+    if (!outlineTargets.length) return;
+    const line = el.reader.getBoundingClientRect().top + 90;
+    let current = 0;
+    outlineTargets.forEach((h, i) => { if (h.getBoundingClientRect().top <= line) current = i; });
+    $$("a", el.outline).forEach((a, i) => a.classList.toggle("on", i === current));
+  }
+  function refreshOutline() {
+    const f = activeFile();
+    renderOutline(f ? $("#readerInner") : null, f);
+  }
+
+  // ---------------------------------------------------------------
+  // Routing: the URL hash names the open file and heading, "#/plans/a.md#goal"
+  // ---------------------------------------------------------------
+  function routeHash(path, anchor) {
+    return "#/" + path.split("/").map(encodeURIComponent).join("/") + (anchor ? "#" + encodeURIComponent(anchor) : "");
+  }
+  function parseRoute() {
+    if (!location.hash.startsWith("#/")) return null;
+    const rest = location.hash.slice(2);
+    const at = rest.indexOf("#");
+    return {
+      path: (at < 0 ? rest : rest.slice(0, at)).split("/").map(safeDecode).join("/"),
+      anchor: at < 0 ? "" : safeDecode(rest.slice(at + 1)),
+    };
+  }
+  function setRoute(path, anchor, nav) {
+    const hash = routeHash(path, anchor);
+    if (nav === "none" || location.hash === hash) return;
+    if (nav === "replace") history.replaceState(null, "", hash);
+    else history.pushState(null, "", hash);
+  }
+
+  // ---------------------------------------------------------------
+  // Live reload
+  // ---------------------------------------------------------------
+  // The open file is re-read when it changes on disk, and the folder is rescanned for added or
+  // removed files. Needs real file handles (Chromium); uploaded files are fixed snapshots.
+  const LIVE_FILE_MS = 2000;
+  const LIVE_FOLDER_MS = 6000;
+  let checkingFile = false;
+  let rescanning = false;
+  let lastScanMs = 0;
+
+  async function checkOpenFile() {
+    const f = activeFile();
+    if (!f || f.kind !== "handle" || checkingFile || document.hidden) return;
+    checkingFile = true;
+    try {
+      const file = await f.handle.getFile();
+      if (f !== activeFile() || file.lastModified === state.activeStamp) return;
+      const text = await file.text();
+      if (f !== activeFile()) return;
+      state.activeStamp = file.lastModified;
+      contentCache.delete(f.id);
+      const top = el.reader.scrollTop;
+      renderDocument(f, text);
+      el.reader.scrollTop = top;
+      toast(`Reloaded ${f.name} — it changed on disk`, 1600);
+    } catch (e) {
+      if (e && e.name === "NotFoundError") rescanFolder();
+    } finally {
+      checkingFile = false;
+    }
+  }
+
+  async function rescanFolder({ manual = false } = {}) {
+    if (!state.root || rescanning) return;
+    rescanning = true;
+    try {
+      const scan = await scanDirHandle(state.root, "", newScan({ quiet: !manual }));
+      lastScanMs = Date.now() - scan.started;
+      applyRescan(scan, manual);
+    } catch (e) {
+      console.warn(e);
+      if (manual) toast("Could not rescan the folder");
+    } finally {
+      rescanning = false;
+    }
+  }
+
+  function applyRescan(scan, manual) {
+    for (const [p, src] of scan.assets) state.assets.set(p, src);
+    const before = new Set(state.files.filter(f => f.fromRoot).map(f => f.path));
+    const found = scan.files.filter(f => !state.removed.has(f.path));
+    const foundPaths = new Set(found.map(f => f.path));
+    const added = found.filter(f => !before.has(f.path));
+    const gone = state.files.filter(f => f.fromRoot && !foundPaths.has(f.path));
+    if (!added.length && !gone.length) {
+      if (manual) toast("No new or removed files");
+      return;
+    }
+    for (const f of added) f.fromRoot = true;
+    const goneIds = new Set(gone.map(f => f.id));
+    const active = activeFile();
+    state.files = sortFiles([...state.files.filter(f => !goneIds.has(f.id)), ...added]);
+    for (const id of goneIds) contentCache.delete(id);
+    renderFiles();
+    renderTopMeta();
+    if (active && goneIds.has(active.id)) {
+      state.activeId = null;
+      toast(`${active.name} was moved or deleted`, 3000);
+    } else {
+      const parts = [];
+      if (added.length) parts.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
+      if (gone.length) parts.push(`${gone.length} removed`);
+      toast(parts.join(" · "));
+    }
   }
 
   // ---------------------------------------------------------------
@@ -838,43 +1252,167 @@ document.addEventListener("click", (e) => {
   // ---------------------------------------------------------------
   const RECENT_LIMIT = 5;
 
-  async function saveRecent(entry) {
-    await idbPut(entry);
-    const all = await idbGetAll();
-    all.sort((a, b) => b.at - a.at);
-    for (const e of all.slice(RECENT_LIMIT)) await idbDel(e.key);
-    renderSidebar();
-  }
-  async function loadRecentsSorted() {
+  // Best effort: failing to save history must never stop a folder from opening.
+  async function rememberFolder({ key, name, source, handle, fileCount }) {
     try {
       const all = await idbGetAll();
-      all.sort((a, b) => b.at - a.at);
-      return all.slice(0, RECENT_LIMIT);
-    } catch (e) { return []; }
+      const prev = key ? all.find(r => r.key === key) : await findSameFolder(all, name, source, handle);
+      const entry = {
+        ...prev,
+        key: prev ? prev.key : `${source === "handle" ? "h" : "u"}::${name}::${Date.now().toString(36)}`,
+        name, source, fileCount, at: Date.now(),
+      };
+      if (handle) entry.handle = handle;
+      await idbPut(entry);
+      const older = all.filter(r => r.key !== entry.key).sort((a, b) => b.at - a.at);
+      for (const r of older.slice(RECENT_LIMIT - 1)) await idbDel(r.key);
+      await loadRecents();
+      return entry.key;
+    } catch (e) {
+      console.warn("Could not save this folder to Recent", e);
+      return null;
+    }
+  }
+  async function findSameFolder(all, name, source, handle) {
+    for (const r of all) {
+      if (r.source !== source || r.name !== name) continue;
+      // Uploads have no handle to compare, so the same name is the best match there is.
+      if (!handle || !r.handle || typeof r.handle.isSameEntry !== "function") return r;
+      try { if (await r.handle.isSameEntry(handle)) return r; } catch (_) {}
+    }
+    return null;
+  }
+  async function loadRecents() {
+    try {
+      const all = await idbGetAll();
+      state.recents = all.sort((a, b) => b.at - a.at).slice(0, RECENT_LIMIT);
+    } catch (_) {
+      state.recents = [];
+    }
+    renderRecents();
+  }
+  async function rememberLastFile(f) {
+    if (!state.activeFolderKey) return;
+    try {
+      const rec = await idbGet(state.activeFolderKey);
+      if (!rec) return;
+      rec.lastFilePath = f.path;
+      rec.at = Date.now();
+      await idbPut(rec);
+      const cached = state.recents.find(r => r.key === rec.key);
+      if (cached) Object.assign(cached, { lastFilePath: rec.lastFilePath, at: rec.at });
+      state.recents.sort((a, b) => b.at - a.at);
+      renderRecents();
+    } catch (_) {}
   }
 
   async function reopenRecent(r) {
-    if (r.source === "handle" && r.handle && r.handle.requestPermission) {
-      try {
-        let perm = await r.handle.queryPermission({ mode: "read" });
-        if (perm !== "granted") perm = await r.handle.requestPermission({ mode: "read" });
-        if (perm !== "granted") { toast("Permission denied"); return; }
-        const files = await walkDirHandle(r.handle);
-        if (!files.length) { toast("No .md / .txt files in that folder anymore"); return; }
-        state.activeFolderKey = r.key;
-        r.fileCount = files.length;
-        r.at = Date.now();
-        await idbPut(r);
-        setFiles(files);
-        const target = r.lastFilePath ? files.find(f => f.path === r.lastFilePath) : files[0];
-        if (target) openFile(target.id);
-      } catch (e) {
-        console.warn(e);
-        toast("Could not re-open folder");
-      }
-    } else {
+    if (r.source !== "handle" || !r.handle || !r.handle.requestPermission) {
       toast("Re-select this folder — browser can't restore uploads");
       openFolderViaInput();
+      return;
+    }
+    try {
+      let perm = await r.handle.queryPermission({ mode: "read" });
+      if (perm !== "granted") perm = await r.handle.requestPermission({ mode: "read" });
+      if (perm !== "granted") { toast("Permission denied"); return; }
+      const scan = await scanDirHandle(r.handle);
+      if (!scan.files.length) { toast("No .md / .txt files in that folder anymore"); return; }
+      await loadFolder({ name: r.name, source: "handle", handle: r.handle, scan, recentKey: r.key, lastFilePath: r.lastFilePath });
+    } catch (e) {
+      console.warn(e);
+      toast("Could not re-open folder");
+    }
+  }
+
+  // Pick up the last folder on load: straight away if the browser kept read access, else one click away.
+  let resumeTarget = null;
+  async function offerResume() {
+    const last = state.recents.find(r => r.source === "handle" && r.handle && r.handle.queryPermission);
+    if (!last || state.files.length) return;
+    try {
+      if (await last.handle.queryPermission({ mode: "read" }) === "granted") {
+        await reopenRecent(last);
+        return;
+      }
+    } catch (_) {}
+    resumeTarget = last;
+    $(".resume-name", el.splashResume).textContent = last.name;
+    $(".resume-file", el.splashResume).textContent = last.lastFilePath || "";
+    el.splashResume.hidden = false;
+  }
+
+  // ---------------------------------------------------------------
+  // Content search
+  // ---------------------------------------------------------------
+  const contentCache = new Map();   // file id -> { stamp, lower }
+  let contentLoad = null;
+  let contentCheckedAt = 0;
+
+  // Read every file once so the filter can search inside them; re-check for edits every few seconds.
+  function loadContents() {
+    if (contentLoad) return contentLoad;
+    const recheck = Date.now() - contentCheckedAt > 5000;
+    const files = state.files.filter(f => recheck || !contentCache.has(f.id));
+    contentLoad = (async () => {
+      let changed = false, next = 0;
+      const worker = async () => {
+        while (next < files.length) {
+          const f = files[next++];
+          try {
+            const file = await fileObject(f);
+            if (contentCache.get(f.id)?.stamp === file.lastModified) continue;
+            contentCache.set(f.id, { stamp: file.lastModified, lower: (await file.text()).toLowerCase() });
+            changed = true;
+          } catch (_) {}
+        }
+      };
+      await Promise.all(Array.from({ length: 6 }, worker));
+      if (recheck) contentCheckedAt = Date.now();
+      return changed;
+    })().finally(() => { contentLoad = null; });
+    return contentLoad;
+  }
+
+  function runSearch(value) {
+    state.searchQuery = value;
+    state.filterCollapsed = {};
+    renderFiles();
+    highlightHits($("#readerInner"));
+    if (state.contentSearch && value.trim()) {
+      loadContents().then(changed => { if (changed) renderFiles(); });
+    }
+  }
+
+  // Mark content-search matches in the open document.
+  function highlightHits(root) {
+    if (!root) return;
+    $$("mark.hit", root).forEach(m => m.replaceWith(...m.childNodes));
+    root.normalize();
+    const q = state.contentSearch ? state.searchQuery.trim().toLowerCase() : "";
+    if (!q) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: node => node.parentElement.closest(".remote-notice, .heading-anchor")
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const nodes = [];
+    while (walker.nextNode()) {
+      if (walker.currentNode.nodeValue.toLowerCase().includes(q)) nodes.push(walker.currentNode);
+    }
+    for (const node of nodes) {
+      const text = node.nodeValue, lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let from = 0;
+      for (let at = lower.indexOf(q); at >= 0; at = lower.indexOf(q, at + q.length)) {
+        frag.append(text.slice(from, at));
+        const mark = document.createElement("mark");
+        mark.className = "hit";
+        mark.textContent = text.slice(at, at + q.length);
+        frag.append(mark);
+        from = at + q.length;
+      }
+      frag.append(text.slice(from));
+      node.replaceWith(frag);
     }
   }
 
@@ -902,35 +1440,44 @@ document.addEventListener("click", (e) => {
     return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function slugifyHeading(text, counts) {
-    const base = String(text || "")
-      .toLowerCase()
-      .normalize("NFKD")
-      .trim()
-      .replace(/[`"'’‘“”]/g, "")
-      .replace(/\p{Mark}/gu, "")
-      .replace(/&/g, " and ")
-      .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
-      .replace(/^-+|-+$/g, "") || "section";
-    const count = counts.get(base) || 0;
-    counts.set(base, count + 1);
-    return count ? `${base}-${count + 1}` : base;
+  // GitHub's heading ids (github-slugger): lowercase, drop punctuation, spaces become "-".
+  function githubSlug(text) {
+    return String(text || "").trim().toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replace(/ /g, "-");
+  }
+  // Repeated headings get -1, -2, … like on GitHub.
+  function makeSlugger() {
+    const seen = new Map();
+    return (text) => {
+      const base = githubSlug(text) || "section";
+      let slug = base;
+      while (seen.has(slug)) {
+        seen.set(base, seen.get(base) + 1);
+        slug = `${base}-${seen.get(base)}`;
+      }
+      seen.set(slug, 0);
+      return slug;
+    };
   }
 
   function enhanceHeadingAnchors(root) {
     if (!root) return;
-    const counts = new Map();
+    const slug = makeSlugger();
     $$("h1,h2,h3,h4,h5,h6", root).forEach(heading => {
       $(".heading-anchor", heading)?.remove();
-      if (!heading.id) heading.id = slugifyHeading(heading.textContent, counts);
+      if (!heading.id) heading.id = ID_PREFIX + slug(heading.textContent);
 
       const anchor = document.createElement("a");
       anchor.className = "heading-anchor";
-      anchor.href = `#${heading.id}`;
+      anchor.href = "#" + (heading.id.startsWith(ID_PREFIX) ? heading.id.slice(ID_PREFIX.length) : heading.id);
       anchor.setAttribute("aria-label", `Link to ${heading.textContent}`);
       anchor.textContent = "#";
       heading.appendChild(anchor);
     });
+  }
+  function headingText(h) {
+    const copy = h.cloneNode(true);
+    copy.querySelector(".heading-anchor")?.remove();
+    return copy.textContent.trim();
   }
 
   function normalizeWikiTarget(value) {
@@ -953,28 +1500,42 @@ document.addEventListener("click", (e) => {
     }) || null;
   }
 
+  // GitHub alerts and Obsidian callouts ("> [!note]"): type -> [style, label, icon].
+  const CALLOUTS = {
+    note: ["info", "Note", "i"], info: ["info", "Info", "i"], todo: ["info", "Todo", "i"],
+    abstract: ["info", "Abstract", "i"], summary: ["info", "Summary", "i"], tldr: ["info", "TL;DR", "i"],
+    example: ["info", "Example", "i"], quote: ["info", "Quote", "”"], cite: ["info", "Cite", "”"],
+    tip: ["question", "Tip", "✓"], hint: ["question", "Hint", "✓"], success: ["question", "Success", "✓"],
+    check: ["question", "Check", "✓"], done: ["question", "Done", "✓"],
+    question: ["question", "Question", "?"], help: ["question", "Help", "?"], faq: ["question", "FAQ", "?"],
+    important: ["important", "Important", "!"],
+    warning: ["warning", "Warning", "!"], warn: ["warning", "Warning", "!"], attention: ["warning", "Attention", "!"],
+    caution: ["danger", "Caution", "!"], danger: ["danger", "Danger", "!"], error: ["danger", "Error", "!"],
+    bug: ["danger", "Bug", "!"], failure: ["danger", "Failure", "×"], fail: ["danger", "Fail", "×"], missing: ["danger", "Missing", "×"],
+  };
+
+  // Only the marker text is removed, so links and formatting in the callout survive.
   function enhanceCallouts(root) {
     if (!root) return;
     $$("blockquote", root).forEach(blockquote => {
-      const first = blockquote.querySelector("p,li");
-      if (!first) return;
+      const first = blockquote.firstElementChild;
+      const lead = first && first.tagName === "P" ? first.firstChild : null;
+      if (!lead || lead.nodeType !== Node.TEXT_NODE) return;
+      const match = lead.nodeValue.match(/^\s*\[!([a-z]+)\][+-]?[ \t]*\n?/i);
+      const kind = match && CALLOUTS[match[1].toLowerCase()];
+      if (!kind) return;
 
-      const text = first.textContent.trim();
-      const match = text.match(/^\[!(info|question|warning|warn|caution|attention)\]\s*(.*)$/i);
-      if (!match) return;
+      const [style, label, iconText] = kind;
+      lead.nodeValue = lead.nodeValue.slice(match[0].length);
+      if (!first.textContent.trim() && !first.querySelector("img")) first.remove();
 
-      const kind = match[1].toLowerCase();
-      const normalizedKind = ["warn", "caution", "attention"].includes(kind) ? "warning" : kind;
-      const label = normalizedKind === "question" ? "Question" : normalizedKind === "warning" ? "Warning" : "Info";
-      const bodyText = match[2].trim();
-
-      blockquote.classList.add("callout", `callout-${normalizedKind}`);
+      blockquote.classList.add("callout", `callout-${style}`);
       blockquote.setAttribute("role", "note");
 
       const icon = document.createElement("span");
       icon.className = "callout-icon";
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = normalizedKind === "question" ? "?" : normalizedKind === "warning" ? "!" : "i";
+      icon.textContent = iconText;
 
       const title = document.createElement("div");
       title.className = "callout-title";
@@ -982,13 +1543,6 @@ document.addEventListener("click", (e) => {
 
       const body = document.createElement("div");
       body.className = "callout-body";
-
-      if (bodyText) {
-        first.innerHTML = DOMPurify.sanitize(marked.parseInline(bodyText), PURIFY_CFG);
-      } else {
-        first.remove();
-      }
-
       while (blockquote.firstChild) {
         body.appendChild(blockquote.firstChild);
       }
@@ -1013,6 +1567,8 @@ document.addEventListener("click", (e) => {
     let match;
 
     while ((match = pattern.exec(text))) {
+      // Tags need a letter: "#123" is an issue or PR number.
+      if (!match[1] && !/\p{Letter}/u.test(match[5])) continue;
       const start = match.index;
       if (start > index) fragment.append(document.createTextNode(text.slice(index, start)));
 
@@ -1131,12 +1687,70 @@ document.addEventListener("click", (e) => {
     </section>`;
   }
 
+  // GFM footnotes for marked: "[^id]" references and "[^id]: text" definitions,
+  // numbered in order of first reference and listed at the end.
+  function markedFootnotes() {
+    let defs = new Map(), order = [];
+    const key = id => id.toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, "-");
+    return {
+      hooks: {
+        preprocess(src) { defs = new Map(); order = []; return src; },
+        postprocess(html) {
+          const used = order.filter(id => defs.get(id)?.html !== undefined);
+          if (!used.length) return html;
+          const items = used.map(id => {
+            const back = ` <a href="#fnref-${key(id)}" class="footnote-backref" aria-label="Back to text">↩</a>`;
+            const body = defs.get(id).html;
+            // The back link goes inside the last paragraph when there is one.
+            const withBack = /<\/p>\s*$/.test(body) ? body.replace(/<\/p>\s*$/, back + "</p>") : body + back;
+            return `<li id="fn-${key(id)}">${withBack}</li>`;
+          });
+          return `${html}<section class="footnotes" aria-label="Footnotes"><ol>${items.join("")}</ol></section>`;
+        },
+      },
+      extensions: [
+        {
+          name: "footnoteDef",
+          level: "block",
+          start: src => src.match(/^\[\^[^\]\s]+\]:/m)?.index,
+          tokenizer(src) {
+            const match = /^\[\^([^\]\s]+)\]:[ \t]*([^\n]*(?:\n+(?: {2,}|\t)[^\n]*)*)(?:\n|$)/.exec(src);
+            if (!match) return;
+            const token = { type: "footnoteDef", raw: match[0], id: match[1], tokens: [] };
+            this.lexer.blockTokens(match[2].replace(/^(?: {1,4}|\t)/gm, ""), token.tokens);
+            defs.set(match[1], token);
+            return token;
+          },
+          renderer(token) {
+            token.html = this.parser.parse(token.tokens);
+            return "";
+          },
+        },
+        {
+          name: "footnoteRef",
+          level: "inline",
+          start: src => { const i = src.indexOf("[^"); return i < 0 ? undefined : i; },
+          tokenizer(src) {
+            const match = /^\[\^([^\]\s]+)\]/.exec(src);
+            if (match && defs.has(match[1])) return { type: "footnoteRef", raw: match[0], id: match[1] };
+          },
+          renderer(token) {
+            let n = order.indexOf(token.id) + 1;
+            const first = !n;
+            if (first) n = order.push(token.id);
+            return `<sup class="footnote-ref"><a href="#fn-${key(token.id)}"${first ? ` id="fnref-${key(token.id)}"` : ""}>${n}</a></sup>`;
+          },
+        },
+      ],
+    };
+  }
+
   // ---------------------------------------------------------------
   // Tweaks
   // ---------------------------------------------------------------
   const TWEAK_KEY = "mdviewer.tweaks.v1";
   const defaults = window.TWEAK_DEFAULTS || {
-    bodySize: 17, readingWidth: 120, bodyFace: "serif", theme: "catppuccin-latte"
+    bodySize: 17, readingWidth: 76, bodyFace: "serif", theme: "catppuccin-latte", outline: true, remoteImages: "block"
   };
 
   let tweaks = { ...defaults };
@@ -1175,11 +1789,27 @@ document.addEventListener("click", (e) => {
     "one-dark": { comment: "#5c6370", keyword: "#c678dd", string: "#98c379", title: "#61afef", variable: "#e06c75", number: "#d19a66", attr: "#e5c07b", addition: "#98c379", deletion: "#e06c75" },
   };
 
+  // Callout colours as on GitHub — blue note, green tip, purple important, yellow warning, red caution —
+  // taken from each theme's palette. A theme's own info/question/warning colours win.
+  const CALLOUT_COLORS = {
+    "catppuccin-latte": ["#1e66f5", "#40a02b", "#8839ef", "#df8e1d", "#d20f39"],
+    "catppuccin-mocha": ["#89b4fa", "#a6e3a1", "#cba6f7", "#f9e2af", "#f38ba8"],
+    "gruvbox-light": ["#076678", "#79740e", "#8f3f71", "#b57614", "#9d0006"],
+    "gruvbox-dark": ["#83a598", "#b8bb26", "#d3869b", "#fabd2f", "#fb4934"],
+    "solarized-light": ["#268bd2", "#859900", "#6c71c4", "#b58900", "#dc322f"],
+    "solarized-dark": ["#268bd2", "#859900", "#6c71c4", "#b58900", "#dc322f"],
+    "tokyo-night": ["#7aa2f7", "#9ece6a", "#bb9af7", "#e0af68", "#f7768e"],
+    "nord": ["#88c0d0", "#a3be8c", "#b48ead", "#ebcb8b", "#bf616a"],
+    "dracula": ["#8be9fd", "#50fa7b", "#bd93f9", "#f1fa8c", "#ff5555"],
+    "one-dark": ["#61afef", "#98c379", "#c678dd", "#e5c07b", "#e06c75"],
+  };
+
+  // CSS variables rather than an injected <style>, so the page's CSP needs no inline styles.
   function applyReaderTypography() {
-    let tag = document.getElementById("tweak-style");
-    if (!tag) { tag = document.createElement("style"); tag.id = "tweak-style"; document.head.appendChild(tag); }
-    const face = tweaks.bodyFace === "serif" ? "var(--serif)" : "var(--sans)";
-    tag.textContent = `.reader-inner{font-family:${face};font-size:${tweaks.bodySize}px;max-width:${tweaks.readingWidth}ch}`;
+    const rs = document.documentElement.style;
+    rs.setProperty("--reader-font", tweaks.bodyFace === "serif" ? "var(--serif)" : "var(--sans)");
+    rs.setProperty("--reader-size", `${tweaks.bodySize}px`);
+    rs.setProperty("--reader-width", `${tweaks.readingWidth}ch`);
   }
 
   function applyTweaks() {
@@ -1198,15 +1828,20 @@ document.addEventListener("click", (e) => {
     rs.setProperty("--ink-4",   t.ink4);
     rs.setProperty("--rule",    t.rule);
     rs.setProperty("--rule-2",  t.rule2);
-    rs.setProperty("--info-accent", t.infoAccent || t.accent);
-    rs.setProperty("--info-bg", t.infoBg || t.accent2);
-    rs.setProperty("--info-rule", t.infoRule || t.rule2);
-    rs.setProperty("--question-accent", t.questionAccent || t.accent);
-    rs.setProperty("--question-bg", t.questionBg || t.accent2);
-    rs.setProperty("--question-rule", t.questionRule || t.rule2);
-    rs.setProperty("--warning-accent", t.warningAccent || t.accent);
-    rs.setProperty("--warning-bg", t.warningBg || t.accent2);
-    rs.setProperty("--warning-rule", t.warningRule || t.rule2);
+
+    const [note, tip, important, warning, caution] = CALLOUT_COLORS[themeKey];
+    const tint = c => `color-mix(in oklab, ${c} 10%, ${t.paper})`;
+    const edge = c => `color-mix(in oklab, ${c} 35%, ${t.rule})`;
+    const callout = (name, accent, bg, rule) => {
+      rs.setProperty(`--${name}-accent`, accent);
+      rs.setProperty(`--${name}-bg`, bg || tint(accent));
+      rs.setProperty(`--${name}-rule`, rule || edge(accent));
+    };
+    callout("info", t.infoAccent || note, t.infoBg, t.infoRule);
+    callout("question", t.questionAccent || tip, t.questionBg, t.questionRule);
+    callout("important", important);
+    callout("warning", t.warningAccent || warning, t.warningBg, t.warningRule);
+    callout("danger", caution);
 
     const syntax = SYNTAX_THEMES[themeKey] || SYNTAX_THEMES[defaults.theme];
     Object.entries(syntax).forEach(([key, value]) => {
@@ -1214,16 +1849,22 @@ document.addEventListener("click", (e) => {
     });
 
     applyReaderTypography();
+    syncTweakControls();
+  }
 
-    // sync controls
+  function syncTweakControls() {
     const szEl = document.getElementById("tw-size");
     const wdEl = document.getElementById("tw-width");
     const faEl = document.getElementById("tw-face");
     const thEl = document.getElementById("tw-theme");
+    const olEl = document.getElementById("tw-outline");
+    const reEl = document.getElementById("tw-remote");
     if (szEl) szEl.value = tweaks.bodySize;
     if (wdEl) wdEl.value = tweaks.readingWidth;
     if (faEl) faEl.value = tweaks.bodyFace;
     if (thEl) thEl.value = tweaks.theme;
+    if (olEl) olEl.checked = !!tweaks.outline;
+    if (reEl) reEl.value = tweaks.remoteImages;
   }
 
   function bindTweaks() {
@@ -1232,13 +1873,80 @@ document.addEventListener("click", (e) => {
     document.getElementById("tw-width").addEventListener("input", e => set("readingWidth", +e.target.value));
     document.getElementById("tw-face").addEventListener("change", e => set("bodyFace",      e.target.value));
     document.getElementById("tw-theme").addEventListener("change", e => set("theme", e.target.value));
-    const applyBtn = document.getElementById("tweaksApply");
-    if (applyBtn) applyBtn.addEventListener("click", () => {
-      persistTweaks();
-      applyTweaks();
-      toast("Saved \u2713");
+    document.getElementById("tw-outline").addEventListener("change", e => { set("outline", e.target.checked); refreshOutline(); });
+    document.getElementById("tw-remote").addEventListener("change", e => {
+      set("remoteImages", e.target.value);
+      const article = $("#readerInner");
+      if (article && tweaks.remoteImages === "load") {
+        releaseRemoteMedia(article);
+        $(".remote-notice", article)?.remove();
+      }
     });
   }
+
+  // ---------------------------------------------------------------
+  // Layout: collapsible, resizable sidebar; a drawer on narrow screens
+  // ---------------------------------------------------------------
+  const LAYOUT_KEY = "mdviewer.layout.v1";
+  const narrow = window.matchMedia("(max-width: 760px)");
+  let layout = { sidebarWidth: 300, sidebarHidden: false };
+  try { layout = { ...layout, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}") }; } catch (_) {}
+
+  function saveLayout() {
+    try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (_) {}
+  }
+  function clampWidth(w) {
+    return Math.round(Math.max(200, Math.min(w, 560, window.innerWidth * 0.6)));
+  }
+  function applyLayout() {
+    el.app.style.setProperty("--sidebar-w", `${clampWidth(layout.sidebarWidth)}px`);
+    el.app.classList.toggle("sidebar-hidden", layout.sidebarHidden && !narrow.matches);
+    const open = narrow.matches ? el.app.classList.contains("drawer-open") : !layout.sidebarHidden;
+    el.sidebarToggle.setAttribute("aria-expanded", String(open));
+  }
+  function toggleSidebar() {
+    if (narrow.matches) el.app.classList.toggle("drawer-open");
+    else { layout.sidebarHidden = !layout.sidebarHidden; saveLayout(); }
+    applyLayout();
+  }
+  function closeDrawer() {
+    if (!el.app.classList.contains("drawer-open")) return;
+    el.app.classList.remove("drawer-open");
+    applyLayout();
+  }
+  function resizeSidebar(width) {
+    layout.sidebarWidth = clampWidth(width);
+    applyLayout();
+  }
+
+  el.sidebarToggle.addEventListener("click", toggleSidebar);
+  el.sidebarResizer.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX, startW = layout.sidebarWidth;
+    el.app.classList.add("resizing");
+    const move = (ev) => resizeSidebar(startW + ev.clientX - startX);
+    const up = () => {
+      el.app.classList.remove("resizing");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      saveLayout();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+  el.sidebarResizer.addEventListener("dblclick", () => { resizeSidebar(300); saveLayout(); });
+  el.sidebarResizer.addEventListener("keydown", (e) => {
+    const step = e.key === "ArrowLeft" ? -16 : e.key === "ArrowRight" ? 16 : 0;
+    if (!step) return;
+    e.preventDefault();
+    resizeSidebar(layout.sidebarWidth + step);
+    saveLayout();
+  });
+  narrow.addEventListener("change", () => { el.app.classList.remove("drawer-open"); applyLayout(); });
+  el.app.addEventListener("click", (e) => {
+    if (el.app.classList.contains("drawer-open") && !e.target.closest(".sidebar, #sidebarToggle")) closeDrawer();
+  });
 
   // ---------------------------------------------------------------
   // Wiring
@@ -1251,6 +1959,7 @@ document.addEventListener("click", (e) => {
   if (el.openFolderBtn) el.openFolderBtn.addEventListener("click", openFolder);
   if (el.openFilesBtn)  el.openFilesBtn.addEventListener("click", openFilesViaInput);
   if (el.splashDrop)    el.splashDrop.addEventListener("click", openFolder);
+  el.splashResume.addEventListener("click", () => { if (resumeTarget) reopenRecent(resumeTarget); });
 
   el.filePicker.addEventListener("change", (e) => {
     if (e.target.files && e.target.files.length) openLooseFiles(e.target.files);
@@ -1259,10 +1968,58 @@ document.addEventListener("click", (e) => {
     if (e.target.files && e.target.files.length) openFolderUpload(e.target.files);
   });
 
+  let searchT = null;
   el.searchInput.addEventListener("input", (e) => {
-    state.searchQuery = e.target.value;
-    state.filterCollapsed = {};
-    renderSidebar();
+    clearTimeout(searchT);
+    searchT = setTimeout(() => runSearch(e.target.value), 120);
+  });
+  el.searchInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    clearTimeout(searchT);
+    el.searchInput.value = "";
+    runSearch("");
+    el.searchInput.blur();
+  });
+  el.contentToggle.addEventListener("click", () => {
+    state.contentSearch = !state.contentSearch;
+    el.contentToggle.setAttribute("aria-pressed", String(state.contentSearch));
+    el.searchInput.placeholder = state.contentSearch ? "Search names and contents…" : "Filter files…";
+    runSearch(el.searchInput.value);
+    el.searchInput.focus();
+  });
+
+  el.reader.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest("a");
+    if (!a || !el.reader.contains(a)) return;
+    if (a.dataset.path !== undefined) {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) return;   // the href is the app's own URL, so a new tab works
+      e.preventDefault();
+      followDocLink(a.dataset.path, a.dataset.anchor);
+    } else if (a.dataset.asset) {
+      e.preventDefault();
+      openAsset(a.dataset.asset);
+    } else if (a.dataset.missing !== undefined) {
+      e.preventDefault();
+      toast(a.title);
+    }
+  });
+  el.outline.addEventListener("click", (e) => {
+    const a = e.target.closest("a[data-anchor]");
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    e.preventDefault();
+    goToAnchor(a.dataset.anchor);
+  });
+  let spyFrame = 0;
+  el.reader.addEventListener("scroll", () => {
+    if (!spyFrame) spyFrame = requestAnimationFrame(() => { spyFrame = 0; syncOutline(); });
+  }, { passive: true });
+
+  window.addEventListener("popstate", () => {
+    const route = parseRoute();
+    const f = route && fileByPath(route.path);
+    if (!f) return;
+    if (f.id === state.activeId) scrollToAnchor(route.anchor);
+    else openFile(f.id, { anchor: route.anchor, nav: "none" });
   });
 
   window.addEventListener("dragenter", onDragEnter);
@@ -1270,20 +2027,44 @@ document.addEventListener("click", (e) => {
   window.addEventListener("dragleave", onDragLeave);
   window.addEventListener("drop",      onDrop);
 
+  setInterval(checkOpenFile, LIVE_FILE_MS);
+  // Periodic rescans only while scanning stays cheap; big folders rescan on focus or on demand.
+  setInterval(() => { if (!document.hidden && lastScanMs < 400) rescanFolder(); }, LIVE_FOLDER_MS);
+  const refreshFromDisk = () => { checkOpenFile(); rescanFolder(); };
+  window.addEventListener("focus", refreshFromDisk);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshFromDisk(); });
+
   window.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "o") {
+    const mod = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    if (mod && !e.altKey && !e.shiftKey && key === "o") {
       e.preventDefault();
       openFolder();
+      return;
     }
-    if (!state.files.length) return;
-    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    if (mod && !e.altKey && !e.shiftKey && key === "b") {
+      e.preventDefault();
+      toggleSidebar();
+      return;
+    }
+    if (e.key === "Escape") closeDrawer();
+    if (mod || e.altKey) return;
+    if (document.activeElement?.closest?.("input,textarea,select,[contenteditable=true]")) return;
+    if (e.key === "/" && state.files.length) {
+      e.preventDefault();
+      if (el.sidebarToggle.getAttribute("aria-expanded") === "false") toggleSidebar();
+      el.searchInput.focus();
+      el.searchInput.select();
+      return;
+    }
+    if (!state.files.length || e.shiftKey) return;
     if (document.getSelection()?.toString()) return;
-    if (document.activeElement?.closest?.("input,textarea,select,[contenteditable=true],#readerInner")) return;
-    if (e.key === "ArrowDown" || e.key === "j") {
+    // ↑/↓ are left to scroll the document; j/k move between files.
+    if (e.key === "j") {
       e.preventDefault();
       navigateFile(1);
     }
-    if (e.key === "ArrowUp" || e.key === "k") {
+    if (e.key === "k") {
       e.preventDefault();
       navigateFile(-1);
     }
@@ -1308,6 +2089,8 @@ document.addEventListener("click", (e) => {
   // Init
   bindTweaks();
   applyTweaks();
-  renderSidebar();
+  applyLayout();
+  renderFiles();
   renderTopMeta();
+  loadRecents().then(offerResume);
 })();
