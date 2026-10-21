@@ -186,7 +186,7 @@ const expandAll = async page => { await page.click("#expandAllBtn"); await settl
     return {
       ids: [...a.querySelectorAll("h1,h2")].map(h => h.id),
       brokenAnchors: [...a.querySelectorAll('a[data-path="README.md"]')].map(x => x.dataset.anchor).filter(x => x && !a.querySelector(`[id="user-content-${CSS.escape(x)}"]`)),
-      callouts: [...a.querySelectorAll(".callout")].map(c => c.className.replace("callout ", "") + ":" + c.querySelector(".callout-title").lastChild.textContent),
+      callouts: [...a.querySelectorAll(".callout")].map(c => c.className.replace("callout ", "") + ":" + c.querySelector(".callout-label")?.textContent ?? null),
       plainQuote: [...a.querySelectorAll("blockquote:not(.callout)")].map(b => b.textContent.trim()),
       noteBody: a.querySelector(".callout-info .callout-body").textContent.replace(/\s+/g, " ").trim(),
       noteHasLink: !!a.querySelector(".callout-info .callout-body a[data-path]"),
@@ -207,7 +207,7 @@ const expandAll = async page => { await page.click("#expandAllBtn"); await settl
   });
   check("B1 GitHub-style heading ids", r.ids, ["user-content-project", "user-content-example", "user-content-example-1", "user-content-qa--notes", "user-content-my_var-setup"]);
   check("B2 every in-page anchor link has a target", r.brokenAnchors, []);
-  check("B3 GitHub alerts + Obsidian callouts", r.callouts, ["callout-info:Note", "callout-question:Tip", "callout-important:Important", "callout-warning:Warning", "callout-danger:Caution", "callout-info:Info"]);
+  check("B3 GitHub alerts + Obsidian callouts", r.callouts, ["callout-info:Note", "callout-question:Tip", "callout-important:Important", "callout-warning:Warning", "callout-danger:Caution", "callout-info:See the guide for details."]);
   check("B4 plain quote untouched", r.plainQuote, ["Just a quote."]);
   check("B5 multi-line note keeps both lines and its link", [r.noteBody, r.noteHasLink], ["GitHub-style note with a link. Second line.", true]);
   check("B6 callout keeps link + bold", r.infoKeepsFormatting, true);
@@ -801,6 +801,19 @@ const expandAll = async page => { await page.click("#expandAllBtn"); await settl
   check("HH3 ![[Note]] is a link to the note, with no stray !", [para("A note").text, para("A note").links], ["A note: Packing list", ["doc:notes/Packing list.md"]]);
   check("HH4 [[photo.png]] links to the image; [[Note|label]] still works", [para("The image itself").links, para("A plain link").text, para("A plain link").links], [["asset:attachments/photo.png"], "A plain link: the list", ["doc:notes/Packing list.md"]]);
   await ph.close();
+
+  // ---------------- II. Obsidian callout titles (#16)
+  const pi = await openFixture(ctx, { files: { "c.md": "# C\n\n> [!tip] Remember the **cache**\n> Body starts here.\n\n> [!NOTE]\n> Plain note.\n\n> [!faq]- Folded question?\n> Answer.\n\n> [!warning] Title only" } });
+  const titled = await pi.evaluate(() => [...document.querySelectorAll("#readerInner .callout")].map(c => ({
+    title: c.querySelector(".callout-label")?.textContent ?? null,
+    custom: c.querySelector(".callout-title").classList.contains("custom"),
+    bold: !!c.querySelector(".callout-title strong"),
+    body: c.querySelector(".callout-body")?.textContent.trim() ?? null,
+  })));
+  check("II1 text after the marker is the title, bold kept; the body starts on the next line", titled[0], { title: "Remember the cache", custom: true, bold: true, body: "Body starts here." });
+  check("II2 a marker on its own line keeps the default title", titled[1], { title: "Note", custom: false, bold: false, body: "Plain note." });
+  check("II3 a fold mark and a title-only callout work too", [titled[2], titled[3]], [{ title: "Folded question?", custom: true, bold: false, body: "Answer." }, { title: "Title only", custom: true, bold: false, body: "" }]);
+  await pi.close();
 
   // ---------------- S. Errors across the run
   check("S1 no page errors or CSP violations", page.logs.filter(l => !/ERR_NAME_NOT_RESOLVED|ERR_INTERNET|example\.com|net::ERR/.test(l)), []);

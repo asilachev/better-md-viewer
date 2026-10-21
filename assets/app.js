@@ -1758,19 +1758,21 @@
     bug: ["danger", "Bug", "!"], failure: ["danger", "Failure", "×"], fail: ["danger", "Fail", "×"], missing: ["danger", "Missing", "×"],
   };
 
-  // Only the marker text is removed, so links and formatting in the callout survive.
+  // Only the marker text is removed, so links and formatting in the callout survive. Text after the
+  // marker on its line is the title, as in Obsidian: "> [!tip] Remember the cache".
   function enhanceCallouts(root) {
     if (!root) return;
     $$("blockquote", root).forEach(blockquote => {
       const first = blockquote.firstElementChild;
       const lead = first && first.tagName === "P" ? first.firstChild : null;
       if (!lead || lead.nodeType !== Node.TEXT_NODE) return;
-      const match = lead.nodeValue.match(/^\s*\[!([a-z]+)\][+-]?[ \t]*\n?/i);
+      const match = lead.nodeValue.match(/^\s*\[!([a-z]+)\][+-]?[ \t]*/i);
       const kind = match && CALLOUTS[match[1].toLowerCase()];
       if (!kind) return;
 
       const [style, label, iconText] = kind;
       lead.nodeValue = lead.nodeValue.slice(match[0].length);
+      const custom = takeFirstLine(first);
       if (!first.textContent.trim() && !first.querySelector("img")) first.remove();
 
       blockquote.classList.add("callout", `callout-${style}`);
@@ -1781,9 +1783,15 @@
       icon.setAttribute("aria-hidden", "true");
       icon.textContent = iconText;
 
+      // One element for the words, so links or bold in a custom title don't become separate flex items.
+      const words = document.createElement("span");
+      words.className = "callout-label";
+      const hasTitle = !!custom.textContent.trim();
+      words.append(hasTitle ? custom : label);
+
       const title = document.createElement("div");
-      title.className = "callout-title";
-      title.append(icon, document.createTextNode(label));
+      title.className = "callout-title" + (hasTitle ? " custom" : "");
+      title.append(icon, words);
 
       const body = document.createElement("div");
       body.className = "callout-body";
@@ -1793,6 +1801,23 @@
 
       blockquote.append(title, body);
     });
+  }
+
+  // Moves a paragraph's first line, up to a line break, out into a fragment.
+  function takeFirstLine(p) {
+    const line = document.createDocumentFragment();
+    while (p.firstChild) {
+      const node = p.firstChild;
+      if (node.nodeName === "BR") { node.remove(); break; }
+      const at = node.nodeType === Node.TEXT_NODE ? node.nodeValue.indexOf("\n") : -1;
+      if (at >= 0) {
+        line.append(node.nodeValue.slice(0, at));
+        node.nodeValue = node.nodeValue.slice(at + 1);
+        break;
+      }
+      line.append(node);
+    }
+    return line;
   }
 
   function highlightCodeBlocks(root) {

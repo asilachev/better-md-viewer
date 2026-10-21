@@ -674,6 +674,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   text-transform: uppercase;
 }
 .callout-icon {
+  flex: none;
   display: inline-grid;
   place-items: center;
   width: 1.45em;
@@ -685,6 +686,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   font-weight: 700;
   line-height: 1;
 }
+/* A title written after the marker reads as a sentence, not a label. */
+.callout-title.custom { align-items: baseline; font-size: .95em; letter-spacing: 0; text-transform: none; }
+.callout-title.custom .callout-icon { font-size: .7em; }
+.callout-title strong { color: inherit; }
+/* A callout that is only a title keeps nothing but whitespace in its body. */
+.callout-body:not(:has(*)) { display: none; }
 .callout-body > :first-child { margin-top: 0; }
 .callout-body > :last-child { margin-bottom: 0; }
 .callout-info { --callout-accent: var(--info-accent); --callout-bg: var(--info-bg); }
