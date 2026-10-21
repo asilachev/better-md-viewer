@@ -36,7 +36,9 @@ document.addEventListener("click", (e) => {
     activeId: null,
     activeFolderKey: null,
     searchQuery: "",
-    collapsed: {},
+    expanded: {},
+    filterCollapsed: {},
+    revealActive: false,
   };
 
   const $  = (s, r = document) => r.querySelector(s);
@@ -420,7 +422,8 @@ document.addEventListener("click", (e) => {
   function setFiles(arr) {
     state.files = sortFiles(arr);
     state.activeId = null;
-    state.collapsed = {};
+    state.expanded = {};
+    state.filterCollapsed = {};
     state.searchQuery = "";
     el.searchInput.value = "";
     renderSidebar();
@@ -439,11 +442,19 @@ document.addEventListener("click", (e) => {
     renderSidebar();
     renderTopMeta();
   }
+  const collator = new Intl.Collator(undefined, { numeric: true });
   function sortFiles(arr) {
-    return arr.slice().sort((a, b) => {
-      if (a.group !== b.group) return a.group.localeCompare(b.group);
-      return a.name.localeCompare(b.name, undefined, { numeric: true });
-    });
+    return arr.slice().sort((a, b) => comparePaths(a.path, b.path));
+  }
+  // Tree order: within each folder, its own files come before its subfolders.
+  function comparePaths(a, b) {
+    const pa = a.split("/"), pb = b.split("/");
+    for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+      const fileA = i === pa.length - 1, fileB = i === pb.length - 1;
+      if (fileA !== fileB) return fileA ? -1 : 1;
+      if (pa[i] !== pb[i]) return collator.compare(pa[i], pb[i]) || (pa[i] < pb[i] ? -1 : 1);
+    }
+    return pa.length - pb.length;
   }
   function removeFile(id) {
     const idx = state.files.findIndex(f => f.id === id);
@@ -469,8 +480,95 @@ document.addEventListener("click", (e) => {
   }
 
   // ---------------------------------------------------------------
+  // File tree
+  // ---------------------------------------------------------------
+  // Folders start collapsed. While filtering they start expanded so every
+  // match shows, and toggles made there don't touch the unfiltered tree.
+  const isFiltering = () => !!state.searchQuery.trim();
+
+  function isCollapsed(path) {
+    return isFiltering() ? !!state.filterCollapsed[path] : !state.expanded[path];
+  }
+  function setCollapsed(path, collapsed) {
+    if (isFiltering()) state.filterCollapsed[path] = collapsed;
+    else state.expanded[path] = !collapsed;
+  }
+  function setAllCollapsed(collapsed) {
+    for (const p of folderPaths(state.files)) setCollapsed(p, collapsed);
+    renderSidebar();
+  }
+  function folderPaths(files) {
+    const out = new Set();
+    for (const f of files) {
+      for (let p = f.group; p && !out.has(p); p = deriveGroup(p)) out.add(p);
+    }
+    return out;
+  }
+  // Expand the folders above f and scroll its row into view on next render.
+  function revealFile(f) {
+    for (let p = f.group; p; p = deriveGroup(p)) {
+      state.expanded[p] = true;
+      state.filterCollapsed[p] = false;
+    }
+    state.revealActive = true;
+  }
+
+  function filteredFiles() {
+    const q = state.searchQuery.trim().toLowerCase();
+    return q
+      ? state.files.filter(f => f.path.toLowerCase().includes(q) || f.name.toLowerCase().includes(q))
+      : state.files;
+  }
+
+  function buildTree(files) {
+    const root = { name: "", path: "", dirs: new Map(), files: [], count: 0 };
+    for (const f of files) {
+      let node = root;
+      node.count++;
+      for (const name of f.group ? f.group.split("/") : []) {
+        let next = node.dirs.get(name);
+        if (!next) {
+          next = { name, path: node.path ? node.path + "/" + name : name, dirs: new Map(), files: [], count: 0 };
+          node.dirs.set(name, next);
+        }
+        next.count++;
+        node = next;
+      }
+      node.files.push(f);
+    }
+    return root;
+  }
+
+  // A chain of folders that each hold just one subfolder renders as a single "a/b/c" row.
+  function compactDir(dir) {
+    let label = dir.name;
+    while (!dir.files.length && dir.dirs.size === 1) {
+      dir = dir.dirs.values().next().value;
+      label += "/" + dir.name;
+    }
+    return { dir, label };
+  }
+
+  // Files in sidebar order, skipping the contents of collapsed folders.
+  function visibleFiles() {
+    const out = [];
+    (function walk(node) {
+      out.push(...node.files);
+      for (const child of node.dirs.values()) {
+        const { dir } = compactDir(child);
+        if (!isCollapsed(dir.path)) walk(dir);
+      }
+    })(buildTree(filteredFiles()));
+    return out;
+  }
+
+  // ---------------------------------------------------------------
   // Rendering: sidebar
   // ---------------------------------------------------------------
+  const ICON_CHEVRON = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>`;
+  const ICON_COLLAPSE_ALL = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 2.5 3 3 3-3"/><path d="m5 13.5 3-3 3 3"/></svg>`;
+  const ICON_EXPAND_ALL = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 5.5 3-3 3 3"/><path d="m5 10.5 3 3 3-3"/></svg>`;
+
   let sidebarRenderGen = 0;
   async function renderSidebar() {
     const gen = ++sidebarRenderGen;
@@ -520,79 +618,48 @@ document.addEventListener("click", (e) => {
     }
 
     if (state.files.length) {
+      const hasFolders = state.files.some(f => f.group);
       const title = document.createElement("div");
-      title.className = "side-title";
+      title.className = "side-title files-title";
       title.style.marginTop = "12px";
-      title.innerHTML = `<span>${state.files.length} file${state.files.length === 1 ? "" : "s"}</span><button id="clearFilesBtn">Clear</button>`;
+      title.innerHTML = `
+        <span>${state.files.length} file${state.files.length === 1 ? "" : "s"}</span>
+        <span class="side-tools">
+          ${hasFolders ? `
+            <button class="tool" id="collapseAllBtn" title="Collapse all folders" aria-label="Collapse all folders">${ICON_COLLAPSE_ALL}</button>
+            <button class="tool" id="expandAllBtn" title="Expand all folders" aria-label="Expand all folders">${ICON_EXPAND_ALL}</button>
+          ` : ""}
+          <button id="clearFilesBtn">Clear</button>
+        </span>
+      `;
       root.appendChild(title);
 
       if (state.files.length > 10) el.searchWrap.classList.add("on");
       else el.searchWrap.classList.remove("on");
 
-      const q = state.searchQuery.trim().toLowerCase();
-      const visible = q
-        ? state.files.filter(f => f.path.toLowerCase().includes(q) || f.name.toLowerCase().includes(q))
-        : state.files;
-
-      const groups = new Map();
-      for (const f of visible) {
-        if (!groups.has(f.group)) groups.set(f.group, []);
-        groups.get(f.group).push(f);
-      }
-      const groupKeys = [...groups.keys()].sort((a, b) => a.localeCompare(b));
-
-      for (const gk of groupKeys) {
-        const g = document.createElement("div");
-        g.className = "group";
-        const headName = gk || "(root)";
-        const collapsed = state.collapsed[gk];
-        const head = document.createElement("div");
-        head.className = "group-head" + (collapsed ? " collapsed" : "");
-        head.innerHTML = `
-          <span class="caret">▾</span>
-          <span class="name" title="${escapeAttr(headName)}">${escapeHtml(headName)}</span>
-          <span class="count">${groups.get(gk).length}</span>
-        `;
-        head.addEventListener("click", () => {
-          state.collapsed[gk] = !state.collapsed[gk];
-          renderSidebar();
-        });
-        g.appendChild(head);
-
-        const list = document.createElement("div");
-        list.className = "files";
-        for (const f of groups.get(gk)) {
-          const fe = document.createElement("div");
-          fe.className = "file" + (f.id === state.activeId ? " active" : "");
-          fe.innerHTML = `
-            <span class="dot-mark"></span>
-            <span class="label"></span>
-            <button class="remove" title="Remove from list">×</button>
-          `;
-          fe.querySelector(".label").textContent = f.name;
-          fe.title = f.path;
-          fe.addEventListener("click", (e) => {
-            if (e.target.closest(".remove")) return;
-            openFile(f.id);
-          });
-          fe.querySelector(".remove").addEventListener("click", (e) => {
-            e.stopPropagation();
-            removeFile(f.id);
-          });
-          list.appendChild(fe);
-        }
-        g.appendChild(list);
-        root.appendChild(g);
-      }
+      const visible = filteredFiles();
+      const tree = document.createElement("div");
+      tree.className = "tree";
+      renderTreeLevel(buildTree(visible), 0, tree);
+      root.appendChild(tree);
 
       const clearBtn = $("#clearFilesBtn");
       if (clearBtn) clearBtn.addEventListener("click", clearFiles);
+      const collapseBtn = $("#collapseAllBtn");
+      if (collapseBtn) collapseBtn.addEventListener("click", () => setAllCollapsed(true));
+      const expandBtn = $("#expandAllBtn");
+      if (expandBtn) expandBtn.addEventListener("click", () => setAllCollapsed(false));
 
       if (!visible.length) {
         const em = document.createElement("div");
         em.className = "empty-side";
         em.textContent = `No files match "${state.searchQuery}".`;
         root.appendChild(em);
+      }
+
+      if (state.revealActive) {
+        state.revealActive = false;
+        $(".file-row.active", tree)?.scrollIntoView({ block: "nearest" });
       }
     } else {
       el.searchWrap.classList.remove("on");
@@ -604,6 +671,63 @@ document.addEventListener("click", (e) => {
       `;
       root.appendChild(em);
     }
+  }
+
+  function renderTreeLevel(node, depth, parent) {
+    for (const f of node.files) parent.appendChild(renderFileRow(f, depth));
+    for (const child of node.dirs.values()) {
+      const { dir, label } = compactDir(child);
+      const collapsed = isCollapsed(dir.path);
+      const wrap = document.createElement("div");
+      wrap.className = "tree-dir" + (collapsed ? " collapsed" : "");
+      wrap.style.setProperty("--depth", depth);
+
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "tree-row dir-row";
+      head.title = dir.path;
+      head.setAttribute("aria-expanded", String(!collapsed));
+      head.innerHTML = `
+        <span class="twist">${ICON_CHEVRON}</span>
+        <span class="name"></span>
+        <span class="count">${dir.count}</span>
+      `;
+      head.querySelector(".name").textContent = label;
+      // Toggle in place — no re-render, so scroll position and focus stay put.
+      head.addEventListener("click", () => {
+        const nowCollapsed = wrap.classList.toggle("collapsed");
+        head.setAttribute("aria-expanded", String(!nowCollapsed));
+        setCollapsed(dir.path, nowCollapsed);
+      });
+
+      const kids = document.createElement("div");
+      kids.className = "tree-children";
+      renderTreeLevel(dir, depth + 1, kids);
+      wrap.append(head, kids);
+      parent.appendChild(wrap);
+    }
+  }
+
+  function renderFileRow(f, depth) {
+    const fe = document.createElement("div");
+    fe.className = "tree-row file-row" + (f.id === state.activeId ? " active" : "");
+    fe.style.setProperty("--depth", depth);
+    fe.innerHTML = `
+      <span class="twist"><span class="dot-mark"></span></span>
+      <span class="name"></span>
+      <button class="remove" title="Remove from list">×</button>
+    `;
+    fe.querySelector(".name").textContent = f.name;
+    fe.title = f.path;
+    fe.addEventListener("click", (e) => {
+      if (e.target.closest(".remove")) return;
+      openFile(f.id);
+    });
+    fe.querySelector(".remove").addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeFile(f.id);
+    });
+    return fe;
   }
 
   function renderTopMeta() {
@@ -618,6 +742,7 @@ document.addEventListener("click", (e) => {
     const f = state.files.find(x => x.id === id);
     if (!f) return;
     state.activeId = id;
+    revealFile(f);
     renderSidebar();
     renderCrumbs(f);
 
@@ -776,7 +901,6 @@ document.addEventListener("click", (e) => {
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
-  function escapeAttr(s) { return escapeHtml(s); }
 
   function slugifyHeading(text, counts) {
     const base = String(text || "")
@@ -1137,6 +1261,7 @@ document.addEventListener("click", (e) => {
 
   el.searchInput.addEventListener("input", (e) => {
     state.searchQuery = e.target.value;
+    state.filterCollapsed = {};
     renderSidebar();
   });
 
@@ -1163,12 +1288,21 @@ document.addEventListener("click", (e) => {
       navigateFile(-1);
     }
   });
+  // Steps through the files the sidebar shows; with every folder collapsed it uses all files.
   function navigateFile(dir) {
-    if (!state.files.length) return;
-    let idx = state.files.findIndex(f => f.id === state.activeId);
-    if (idx < 0) idx = 0;
-    else idx = (idx + dir + state.files.length) % state.files.length;
-    openFile(state.files[idx].id);
+    const visible = visibleFiles();
+    const pool = visible.length || isFiltering() ? visible : state.files;
+    if (!pool.length) return;
+    let idx = pool.findIndex(f => f.id === state.activeId);
+    if (idx < 0) {
+      // Active file is hidden (or none is open): step from the slot it would occupy.
+      const rank = new Map(state.files.map((f, i) => [f.id, i]));
+      const cur = rank.get(state.activeId) ?? -1;
+      const after = pool.findIndex(f => rank.get(f.id) > cur);
+      idx = (after < 0 ? pool.length : after) - (dir > 0 ? 1 : 0);
+    }
+    idx = (idx + dir + pool.length) % pool.length;
+    openFile(pool[idx].id);
   }
 
   // Init
