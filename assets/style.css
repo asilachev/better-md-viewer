@@ -1151,6 +1151,7 @@ body.dragging .splash-drop { border-color: var(--accent); background: var(--acce
 /* Print: just the document, dark on white whatever the theme */
 @media print {
   :root {
+    color-scheme: light !important;
     --paper: #fff !important; --ink: #111 !important; --ink-2: #222 !important; --ink-3: #4a4a4a !important; --ink-4: #777 !important;
     --surface: #f4f4f4 !important; --surface-2: #ebebeb !important; --line: #e0e0e0 !important; --line-2: #cfcfcf !important;
     --accent: #2f5f9a !important; --accent-2: #e7eef8 !important;

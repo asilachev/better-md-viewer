@@ -905,6 +905,7 @@
       const frag = DOMPurify.sanitize(renderFrontmatterTable(frontmatter) + marked.parse(body), { ...PURIFY_CFG, RETURN_DOM_FRAGMENT: true });
       if (tweaks.remoteImages !== "load" && !state.remoteAllowed.has(f.path)) held = holdRemoteMedia(frag);
       holdLocalMedia(frag);
+      matchPicturesToTheme(frag);
       article.append(frag);
     } else {
       const pre = document.createElement("pre");
@@ -982,7 +983,8 @@
     article.prepend(bar);
   }
 
-  // Relative image paths point into the opened folder, not next to index.html.
+  // Relative image paths point into the opened folder, not next to index.html. A <picture> source
+  // names its file in srcset; only a single URL is resolved, not a list of candidates.
   const HAS_SCHEME = /^([a-z][a-z\d+.-]*:|\/\/)/i;
   function holdLocalMedia(root) {
     root.querySelectorAll("[src]").forEach(node => {
@@ -992,10 +994,17 @@
       node.removeAttribute("src");
       node.removeAttribute("srcset");
     });
+    root.querySelectorAll("picture > source[srcset]").forEach(node => {
+      const srcset = node.getAttribute("srcset").trim();
+      if (!srcset || HAS_SCHEME.test(srcset) || /[\s,]/.test(srcset)) return;
+      node.setAttribute("data-local-srcset", srcset);
+      node.removeAttribute("srcset");
+    });
   }
   function loadLocalMedia(root, f, gen) {
-    return Promise.all($$("[data-local-src]", root).map(async node => {
-      const path = resolvePath(f.path, node.getAttribute("data-local-src")).path;
+    const held = [...$$("[data-local-src]", root).map(n => [n, "src"]), ...$$("[data-local-srcset]", root).map(n => [n, "srcset"])];
+    return Promise.all(held.map(async ([node, attr]) => {
+      const path = resolvePath(f.path, node.getAttribute("data-local-" + attr)).path;
       const src = findAsset(path);
       if (!src) { markMissing(node, path); return; }
       try {
@@ -1003,11 +1012,25 @@
         if (gen !== renderGen) return;
         const url = URL.createObjectURL(blob);
         blobUrls.push(url);
-        node.setAttribute("src", url);
+        node.setAttribute(attr, url);
       } catch (_) {
         markMissing(node, path);
       }
     }));
+  }
+
+  // A <picture> that picks its file by light or dark follows the reader's theme, not the OS.
+  const SCHEME_MEDIA = /^\s*\(\s*prefers-color-scheme\s*:\s*(light|dark)\s*\)\s*$/i;
+  function matchPicturesToTheme(root) {
+    const dark = themeIsDark();
+    root.querySelectorAll("picture > source").forEach(source => {
+      if (!source.dataset.scheme) {
+        const m = SCHEME_MEDIA.exec(source.getAttribute("media") || "");
+        if (!m) return;
+        source.dataset.scheme = m[1].toLowerCase();
+      }
+      source.setAttribute("media", (source.dataset.scheme === "dark") === dark ? "all" : "not all");
+    });
   }
   function markMissing(node, path) {
     node.classList.add("missing-asset");
@@ -2158,6 +2181,11 @@
     if (theme === "system") return darkScheme.matches ? "slate" : "paper";
     return THEMES[theme] ? theme : defaults.theme;
   }
+  function themeIsDark() {
+    const paper = THEMES[resolveTheme(tweaks.theme)].paper;
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(paper.slice(i, i + 2), 16));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+  }
 
   // CSS variables rather than an injected <style>, so the page's CSP needs no inline styles.
   function applyReaderTypography() {
@@ -2173,6 +2201,8 @@
     if (tweaks.theme !== "system") tweaks.theme = themeKey;
     const t = THEMES[themeKey];
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t.paper);
+    // An SVG shown as an image answers prefers-color-scheme from this, not from the OS.
+    rs.setProperty("color-scheme", themeIsDark() ? "dark" : "light");
     rs.setProperty("--accent",   t.accent);
     rs.setProperty("--accent-2", t.accent2);
     rs.setProperty("--paper",   t.paper);
@@ -2206,6 +2236,8 @@
 
     applyReaderTypography();
     syncTweakControls();
+    const article = $("#readerInner");
+    if (article) matchPicturesToTheme(article);
   }
 
   function syncTweakControls() {

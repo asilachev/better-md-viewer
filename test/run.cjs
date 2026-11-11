@@ -828,6 +828,56 @@ const expandAll = async page => { await page.click("#expandAllBtn"); await settl
   }), [true, true, true]);
   await pj.close();
 
+  // ---------------- KK. A <picture> follows the reader's theme, not the OS
+  const PIC = '# Picture\n\n<picture>\n  <source media="(prefers-color-scheme: light)" srcset="img/light.svg">\n  <img src="img/dark.svg" alt="pic">\n</picture>\n';
+  const box = w => ({ text: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="10"><rect width="${w}" height="10"/></svg>` });
+  const ctxK = await browser.newContext({ viewport: { width: 1200, height: 800 }, colorScheme: "light" });
+  const pk = await openFixture(ctxK, { files: { "pic.md": PIC, "img/light.svg": box(10), "img/dark.svg": box(20) } });
+  // The two files differ in width, so the width says which one is showing.
+  const picWidth = w => pk.waitForFunction(w => document.querySelector("#readerInner picture img")?.naturalWidth === w, w, { timeout: 5000 })
+    .then(() => w, () => pk.evaluate(() => document.querySelector("#readerInner picture img")?.naturalWidth));
+  check("KK1 Slate on a light OS shows the dark file", await picWidth(20), 20);
+  await pk.click("#settingsBtn");
+  await pk.selectOption("#tw-theme", "paper");
+  check("KK2 Paper shows the light file, read from the folder", [await picWidth(10), await pk.evaluate(() => document.querySelector("#readerInner picture source").srcset.startsWith("blob:"))], [10, true]);
+  await pk.selectOption("#tw-theme", "system");
+  const systemLight = await picWidth(10);
+  await pk.emulateMedia({ colorScheme: "dark" });
+  check("KK3 System follows the OS", [systemLight, await picWidth(20)], [10, 20]);
+  check("KK4 no failed local file loads", pk.logs.filter(l => /ERR_FILE_NOT_FOUND/.test(l)), []);
+  await pk.close(); await ctxK.close();
+
+  // ---------------- LL. An image that picks its palette by prefers-color-scheme follows the reader's theme
+  const AUTO = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><style>rect{fill:#00f}@media (prefers-color-scheme:light){rect{fill:#f00}}</style><rect width="40" height="40"/></svg>';
+  const ctxL = await browser.newContext({ viewport: { width: 1200, height: 800 }, colorScheme: "light" });
+  const pl = await openFixture(ctxL, { files: { "auto.md": "# Auto\n\n![auto](img/auto.svg)\n", "img/auto.svg": { text: AUTO } } });
+  // Only the painted pixels say which palette the image drew: blue is the dark one, red the light one.
+  const palette = async () => {
+    await pl.waitForFunction(() => document.querySelector("#readerInner img")?.naturalWidth > 0);
+    const png = (await pl.locator("#readerInner img").screenshot()).toString("base64");
+    return pl.evaluate(async png => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${png}`;
+      await img.decode();
+      const g = Object.assign(document.createElement("canvas"), { width: img.width, height: img.height }).getContext("2d");
+      g.drawImage(img, 0, 0);
+      const [r, , b] = g.getImageData(img.width >> 1, img.height >> 1, 1, 1).data;
+      return r > b ? "light" : "dark";
+    }, png);
+  };
+  check("LL1 Slate on a light OS draws the dark palette", await palette(), "dark");
+  await pl.click("#settingsBtn");
+  await pl.selectOption("#tw-theme", "paper"); await settle(pl, 150);
+  check("LL2 Paper draws the light palette", await palette(), "light");
+  await pl.selectOption("#tw-theme", "system"); await settle(pl, 150);
+  const systemPalette = await palette();
+  await pl.emulateMedia({ colorScheme: "dark" }); await settle(pl, 150);
+  check("LL3 System follows the OS", [systemPalette, await palette()], ["light", "dark"]);
+  await pl.emulateMedia({ media: "print" }); await settle(pl, 150);
+  check("LL4 Print draws the light palette under a dark theme", await palette(), "light");
+  check("LL5 no page errors or CSP violations", pl.logs, []);
+  await pl.close(); await ctxL.close();
+
   // ---------------- S. Errors across the run
   check("S1 no page errors or CSP violations", page.logs.filter(l => !/ERR_NAME_NOT_RESOLVED|ERR_INTERNET|example\.com|net::ERR/.test(l)), []);
 
